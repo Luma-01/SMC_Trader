@@ -1,4 +1,5 @@
 import asyncio
+import pandas as pd
 from config.settings import SYMBOLS, RR, SL_BUFFER
 from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
@@ -35,11 +36,10 @@ async def strategy_loop():
         for symbol in SYMBOLS:
             try:
                 df_htf = candles[symbol]['1h']
-                df_ltf = candles[symbol]['5m']  # Binance 분석 기준
+                df_ltf = candles[symbol]['5m']
                 if len(df_htf) < 30 or len(df_ltf) < 30:
                     continue
 
-                import pandas as pd
                 htf = pd.DataFrame(df_htf)
                 ltf = pd.DataFrame(df_ltf)
 
@@ -52,14 +52,16 @@ async def strategy_loop():
                     qty = SYMBOLS[symbol]['minQty']
                     lev = SYMBOLS[symbol]['leverage']
 
+                    # 진입
                     binance_order(symbol, 'buy' if direction == 'long' else 'sell', qty)
                     gate_order(symbol.replace("USDT", "_USDT"), 'buy' if direction == 'long' else 'sell', qty, lev)
 
+                    # 포지션 등록
                     pm.enter(symbol, direction, entry, sl, tp)
 
-                # 포지션 상태 업데이트
+                # 실시간 구조 업데이트 + MSS 보호선 체크
                 current_price = ltf['close'].iloc[-1]
-                pm.update_price(symbol, current_price)
+                pm.update_price(symbol, current_price, ltf_df=ltf)
 
             except Exception as e:
                 send_discord_alert(f"[ERROR] {symbol} 전략 오류: {e}")
