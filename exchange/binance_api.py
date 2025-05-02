@@ -28,6 +28,7 @@ def get_max_leverage(symbol: str) -> int:
         brackets = client.futures_leverage_bracket()
         for entry in brackets:
             if entry["symbol"] == symbol.upper():
+                print(f"[DEBUG] {symbol} 최대 레버리지 조회 완료: {entry['brackets'][0]['initialLeverage']}")
                 return int(entry["brackets"][0]["initialLeverage"])
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패 ({symbol}): {e}")
