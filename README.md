@@ -1,1 +1,1 @@
-# SMC_Trader
+# SMC_Trader🤖
