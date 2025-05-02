@@ -14,7 +14,7 @@ def set_leverage(symbol: str, leverage: int):
         client.futures_change_leverage(symbol=symbol, leverage=leverage)
         client.futures_change_margin_type(symbol=symbol, marginType="ISOLATED")
     except Exception as e:
-        print(f"[ERROR] leverage 설정 실패: {symbol} - {e}")
+        raise e
 
 def place_order(symbol: str, side: str, quantity: float):
     try:
@@ -33,10 +33,11 @@ def place_order(symbol: str, side: str, quantity: float):
 def get_open_position(symbol: str):
     try:
         positions = client.futures_position_information(symbol=symbol)
+        if not positions:
+            return None
         pos_data = positions[0]
         amt = float(pos_data['positionAmt'])
         entry = float(pos_data['entryPrice'])
-
         if amt != 0:
             direction = 'long' if amt > 0 else 'short'
             return {
@@ -45,5 +46,5 @@ def get_open_position(symbol: str):
                 'entry': entry
             }
     except Exception as e:
-        print(f"[ERROR] 포지션 조회 실패: {symbol} - {e}")
+        raise e
     return None
