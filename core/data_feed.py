@@ -32,14 +32,15 @@ def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMI
     ]
 
 def initialize_historical():
+    failed = []
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
             try:
                 data = load_historical_candles(symbol, tf)
                 candles[symbol][tf].extend(data)
-                print(f"[HIST] {symbol} {tf} loaded ({len(data)} candles)")
             except Exception as e:
-                print(f"[ERROR] loading {symbol}-{tf}: {e}")
+                failed.append(f"{symbol}-{tf}")
+    print(f"[HIST] 모든 심볼/타임프레임 캔들 로딩 완료. 실패: {failed if failed else '없음'}")
 
 # 2. 실시간 WebSocket 연결
 async def stream_live_candles():
