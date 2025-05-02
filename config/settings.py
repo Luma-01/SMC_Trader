@@ -27,7 +27,7 @@ def fetch_max_leverages():
         return {
             entry['symbol']: int(entry['brackets'][0]['initialLeverage'])
             for entry in data
-        )
+        }
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패: {e}")
         return {}
