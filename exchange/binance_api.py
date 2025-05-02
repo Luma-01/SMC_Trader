@@ -25,13 +25,10 @@ def set_leverage(symbol: str, leverage: int) -> None:
 
 def get_max_leverage(symbol: str) -> int:
     try:
-        data = client._request("get", "/fapi/v1/leverageBracket", signed=True)
-        if isinstance(data, list):  # ← 명확하게 타입 확인
-            for entry in data:
-                if entry["symbol"] == symbol.upper():
-                    return int(entry["brackets"][0]["initialLeverage"])
-        else:
-            print(f"[ERROR] unexpected response type: {type(data)} -> {data}")
+        brackets = client.futures_leverage_bracket()
+        for entry in brackets:
+            if entry["symbol"] == symbol.upper():
+                return int(entry["brackets"][0]["initialLeverage"])
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패 ({symbol}): {e}")
     return 20  # 기본값
