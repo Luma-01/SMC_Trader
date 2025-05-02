@@ -22,10 +22,12 @@ def fetch_max_leverages():
     try:
         res = requests.get(f"{BINANCE_FUTURES_URL}/fapi/v1/leverageBracket")
         data = res.json()
+        if isinstance(data, dict) and "code" in data:
+            raise Exception(f"API Error: {data}")
         return {
             entry['symbol']: int(entry['brackets'][0]['initialLeverage'])
             for entry in data
-        }
+        )
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패: {e}")
         return {}
