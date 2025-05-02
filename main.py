@@ -22,14 +22,25 @@ def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
 def initialize():
     print("[INIT] 초기 세팅 중...")
     initialize_historical()
+    failed_positions = []
+    failed_leverage = []
     for symbol, data in SYMBOLS.items():
-        # 포지션 확인 후 등록
-        pos = binance_pos(symbol)
-        if pos:
-            sl, tp = calculate_sl_tp(pos['entry'], pos['direction'], SL_BUFFER, RR)
-            pm.init_position(symbol, pos['direction'], pos['entry'], sl, tp)
-        # 레버리지 설정
-        set_leverage(symbol, data['leverage'])
+        try:
+            pos = binance_pos(symbol)
+            if pos:
+                sl, tp = calculate_sl_tp(pos['entry'], pos['direction'], SL_BUFFER, RR)
+                pm.init_position(symbol, pos['direction'], pos['entry'], sl, tp)
+        except Exception:
+            failed_positions.append(symbol)
+        try:
+            set_leverage(symbol, data['leverage'])
+        except Exception:
+            failed_leverage.append(symbol)
+
+    if failed_positions:
+        print(f"[WARN] 포지션 조회 실패 심볼: {', '.join(failed_positions)}")
+    if failed_leverage:
+        print(f"[WARN] 레버리지 설정 실패 심볼: {', '.join(failed_leverage)}")
 
 async def strategy_loop():
     while True:
