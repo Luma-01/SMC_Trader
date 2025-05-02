@@ -33,8 +33,12 @@ def initialize():
         except Exception:
             failed_positions.append(symbol)
         try:
-            set_leverage(symbol, data['leverage'])
-        except Exception:
+            max_lev = get_max_leverage(symbol)
+            req_lev = data['leverage']
+            applied_lev = min(req_lev, max_lev)
+            set_leverage(symbol, applied_lev)
+        except Exception as e:
+            print(f"[WARN] 레버리지 설정 실패: {symbol} → {e}")
             failed_leverage.append(symbol)
 
     if failed_positions:
