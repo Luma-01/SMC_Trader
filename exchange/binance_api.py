@@ -12,19 +12,28 @@ client.API_URL = "https://fapi.binance.com/fapi"
 
 print("[BINANCE API] Loaded key:", os.getenv("BINANCE_API_KEY"))
 
-def set_leverage(symbol: str, leverage: int):
+def set_leverage(symbol: str, leverage: int) -> None:
     try:
-        client.futures_change_leverage(symbol=symbol, leverage=leverage)
-        client.futures_change_margin_type(symbol=symbol, marginType="ISOLATED")
+        # margin type 강제 설정
+        client.futures_change_margin_type(symbol=symbol.upper(), marginType='ISOLATED')
     except Exception as e:
-        raise e
+        if "No need to change margin type" not in str(e):
+            print(f"[WARN] 마진 타입 변경 실패: {symbol} → {e}")
+
+    try:
+        client.futures_change_leverage(symbol=symbol.upper(), leverage=leverage)
+    except Exception as e:
+        print(f"[WARN] 레버리지 설정 실패: {symbol} → {e}")
 
 def get_max_leverage(symbol: str) -> int:
     try:
         data = client._request("get", "/fapi/v1/leverageBracket", signed=True)
-        for entry in data:
-            if entry['symbol'] == symbol.upper():
-                return int(entry['brackets'][0]['initialLeverage'])
+        if isinstance(data, list):  # ← 명확하게 타입 확인
+            for entry in data:
+                if entry["symbol"] == symbol.upper():
+                    return int(entry["brackets"][0]["initialLeverage"])
+        else:
+            print(f"[ERROR] unexpected response type: {type(data)} -> {data}")
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패 ({symbol}): {e}")
     return 20  # 기본값
