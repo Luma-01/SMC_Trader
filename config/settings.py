@@ -20,7 +20,7 @@ CUSTOM_LEVERAGES = {}
 
 def fetch_max_leverages():
     try:
-        data = client._request("get", "/fapi/v1/leverageBracket")
+        data = client._request("get", "/fapi/v1/leverageBracket", signed=True)
         return {
             entry['symbol']: int(entry['brackets'][0]['initialLeverage'])
             for entry in data
