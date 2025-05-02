@@ -5,6 +5,7 @@ from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
+from exchange.binance_api import get_max_leverage
 from exchange.gate_sdk import place_order as gate_order, get_open_position as gate_pos
 from notify.discord import send_discord_alert
 
