@@ -1,6 +1,14 @@
-# config/settings.py
-
 import requests
+from binance.client import Client
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+
+client = Client(api_key, api_secret, tld='com')
+client.API_URL = "https://fapi.binance.com/fapi"
 
 RR = 2.0
 SL_BUFFER = 0.005
@@ -8,19 +16,11 @@ CANDLE_LIMIT = 150
 TIMEFRAMES = ['1m', '5m', '15m', '1h']
 DEFAULT_LEVERAGE = 20
 
-BINANCE_FUTURES_URL = "https://fapi.binance.com"
-
-# 예: 'BTCUSDT': 10,  # 수동 설정 가능
-CUSTOM_LEVERAGES = {
-    "BTCUSDT": 30,
-}
+CUSTOM_LEVERAGES = {}
 
 def fetch_max_leverages():
     try:
-        res = requests.get(f"{BINANCE_FUTURES_URL}/fapi/v1/leverageBracket")
-        data = res.json()
-        if isinstance(data, dict) and "code" in data:
-            raise Exception(f"API Error: {data}")
+        data = client._request("get", "/fapi/v1/leverageBracket")
         return {
             entry['symbol']: int(entry['brackets'][0]['initialLeverage'])
             for entry in data
@@ -31,7 +31,7 @@ def fetch_max_leverages():
 
 def fetch_top_futures_symbols(limit=10):
     try:
-        ticker = requests.get(f"{BINANCE_FUTURES_URL}/fapi/v1/ticker/24hr").json()
+        ticker = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/24hr").json()
         sorted_by_volume = sorted(ticker, key=lambda x: float(x['quoteVolume']), reverse=True)
         top_symbols = [s['symbol'] for s in sorted_by_volume if s['symbol'].endswith('USDT')][:limit]
         return top_symbols
@@ -65,5 +65,5 @@ def fetch_symbol_info(symbols):
 
     return result
 
-# 최종 자동 로딩 심볼 목록
+# 실행 시 자동 로딩
 SYMBOLS = fetch_symbol_info(fetch_top_futures_symbols())
