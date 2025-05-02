@@ -10,8 +10,6 @@ api_secret = os.getenv("BINANCE_API_SECRET")
 client = Client(api_key, api_secret, tld='com')
 client.API_URL = "https://fapi.binance.com/fapi"
 
-print("[BINANCE API] Loaded key:", os.getenv("BINANCE_API_KEY"))
-
 def set_leverage(symbol: str, leverage: int) -> None:
     try:
         # margin type 강제 설정
