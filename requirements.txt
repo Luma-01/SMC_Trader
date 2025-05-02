@@ -1,0 +1,6 @@
+aiohttp
+pandas
+requests
+python-dotenv
+python-binance
+gate-api
