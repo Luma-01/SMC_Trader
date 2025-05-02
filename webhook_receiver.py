@@ -4,7 +4,7 @@ import hmac
 import hashlib
 import os
 from dotenv import load_dotenv
-import requests  # 🔔 디스코드 알림용
+import requests  # 🔔 디스코드 알림용
 
 load_dotenv()
 
@@ -15,13 +15,13 @@ GITHUB_SECRET = os.getenv("GITHUB_SECRET").encode()
 
 def send_discord_alert(message: str):
     if not DISCORD_WEBHOOK:
-        print("❗ 디스코드 Webhook URL이 없습니다.")
+        print("❗ 디스코드 Webhook URL이 없습니다.")
         return
     data = {"content": f"🔔 {message}"}
     try:
         requests.post(DISCORD_WEBHOOK, json=data)
     except Exception as e:
-        print(f"❗ 디스코드 전송 실패: {e}")
+        print(f"❗ 디스코드 전송 실패: {e}")
 
 def verify_signature(payload, signature):
     expected = 'sha256=' + hmac.new(GITHUB_SECRET, payload, hashlib.sha256).hexdigest()
@@ -29,18 +29,18 @@ def verify_signature(payload, signature):
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    print("✅ Webhook POST 요청 받음")
+    print("✅ Webhook POST 요청 받음")
     
     signature = request.headers.get('X-Hub-Signature-256')
     if signature is None or not verify_signature(request.data, signature):
-        print("❌ Signature 검증 실패")
-        send_discord_alert("❌ Signature 검증 실패")
+        print("❌ Signature 검증 실패")
+        send_discord_alert("❌ Signature 검증 실패")
         abort(403)
     
-    print("✅ Signature OK > git pull 시작")
+    print("✅ Signature OK > git pull 시작")
     subprocess.call(['git', '-C', '/home/ubuntu/SMC_Trader', 'pull'])
-    print("✅ git pull 완료 > 응답 전송")
-    send_discord_alert("코드 업데이트 완료!")  # repo_name 제거
+    print("✅ git pull 완료 > 응답 전송")
+    send_discord_alert("코드 업데이트 완료!")  # repo_name 제거
     return '✅ Verified & Pull done', 200
 
 if __name__ == '__main__':
