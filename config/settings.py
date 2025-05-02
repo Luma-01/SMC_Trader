@@ -10,9 +10,9 @@ DEFAULT_LEVERAGE = 20
 
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
+# 예: 'BTCUSDT': 10,  # 수동 설정 가능
 CUSTOM_LEVERAGES = {
     "BTCUSDT": 30,
-    # 예: 'BTCUSDT': 10,  # 수동 설정 가능
 }
 
 def fetch_max_leverages():
