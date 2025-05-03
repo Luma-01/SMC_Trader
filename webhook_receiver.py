@@ -16,7 +16,7 @@ app = Flask(__name__)
 GITHUB_SECRET = os.getenv("GITHUB_SECRET").encode()
 
 def send_discord_alert(message: str):
-    send_discord_message(f"🔔 {message}", "aggregated")
+    send_discord_message(f"🔔 {message}", exchange="aggregated")
 
 def verify_signature(payload, signature):
     mac = hmac.new(GITHUB_SECRET, msg=payload, digestmod=hashlib.sha256)
@@ -30,13 +30,13 @@ def webhook():
     signature = request.headers.get('X-Hub-Signature-256')
     if signature is None or not verify_signature(request.data, signature):
         print("❌ Signature 검증 실패")
-        send_discord_message("❌ Signature 검증 실패", "aggregated")
+        send_discord_message("❌ Signature 검증 실패", exchange="aggregated")
         abort(403)
     
     print("✅ Signature OK > git pull 시작")
     subprocess.call(['git', '-C', '/home/ubuntu/SMC_Trader', 'pull'])
     print("✅ git pull 완료 > 응답 전송")
-    send_discord_message("코드 업데이트 완료!", "aggregated")
+    send_discord_message("코드 업데이트 완료!", exchange="aggregated")
     return '✅ Verified & Pull done', 200
 
 if __name__ == '__main__':
