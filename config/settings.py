@@ -1,7 +1,10 @@
+# config/settings.py
+
 import requests
 from binance.client import Client
 from dotenv import load_dotenv
 import os
+from notify.discord import send_discord_debug
 
 load_dotenv()
 api_key = os.getenv("BINANCE_API_KEY")
@@ -27,6 +30,7 @@ def fetch_max_leverages():
         }
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패: {e}")
+        send_discord_debug(f"[ERROR] 최대 레버리지 조회 실패: {e}", "binance")
         return {}
 
 def fetch_top_futures_symbols(limit=10):
@@ -37,6 +41,7 @@ def fetch_top_futures_symbols(limit=10):
         return top_symbols
     except Exception as e:
         print(f"[ERROR] 거래량 기준 심볼 조회 실패: {e}")
+        send_discord_debug(f"[ERROR] 거래량 기준 심볼 조회 실패: {e}", "binance")
         return []
 
 def fetch_symbol_info(symbols):

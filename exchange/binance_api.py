@@ -1,7 +1,11 @@
+# exchange/binance_api.py
+
 import os
 from binance.client import Client
 from binance.enums import *
 from dotenv import load_dotenv
+from notify.discord import send_discord_debug, send_discord_message
+
 
 load_dotenv()
 
@@ -17,11 +21,13 @@ def set_leverage(symbol: str, leverage: int) -> None:
     except Exception as e:
         if "No need to change margin type" not in str(e):
             print(f"[WARN] 마진 타입 변경 실패: {symbol} → {e}")
+            send_discord_debug(f"[BINANCE] 마진 타입 변경 실패: {symbol} → {e}", "binance")
 
     try:
         client.futures_change_leverage(symbol=symbol.upper(), leverage=leverage)
     except Exception as e:
         print(f"[WARN] 레버리지 설정 실패: {symbol} → {e}")
+        send_discord_debug(f"[BINANCE] 레버리지 설정 실패: {symbol} → {e}", "binance")
 
 def get_max_leverage(symbol: str) -> int:
     try:
@@ -29,9 +35,11 @@ def get_max_leverage(symbol: str) -> int:
         for entry in brackets:
             if entry["symbol"] == symbol.upper():
                 print(f"[DEBUG] {symbol} 최대 레버리지 조회 완료: {entry['brackets'][0]['initialLeverage']}")
+                send_discord_debug(f"[BINANCE] {symbol} 최대 레버리지: {entry['brackets'][0]['initialLeverage']}", "binance")
                 return int(entry["brackets"][0]["initialLeverage"])
     except Exception as e:
         print(f"[ERROR] 최대 레버리지 조회 실패 ({symbol}): {e}")
+        send_discord_debug(f"[BINANCE] 최대 레버리지 조회 실패: {symbol} → {e}", "binance")
     return 20  # 기본값
 
 def place_order(symbol: str, side: str, quantity: float):
@@ -43,9 +51,12 @@ def place_order(symbol: str, side: str, quantity: float):
             quantity=quantity
         )
         print(f"[ORDER] {symbol} {side.upper()} x{quantity}")
+        send_discord_message(f"[BINANCE ORDER] {symbol} {side.upper()} x{quantity}", "binance")
+        send_discord_debug(f"[DEBUG] 주문 전송됨: {symbol} {side.upper()} x{quantity}", "binance")
         return order
     except Exception as e:
         print(f"[ERROR] 주문 실패: {symbol} - {e}")
+        send_discord_debug(f"[BINANCE] 주문 실패: {symbol} → {e}", "binance")
         return None
 
 def get_open_position(symbol: str):

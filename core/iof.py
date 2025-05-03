@@ -1,8 +1,12 @@
+# core/iof.py
+
 import pandas as pd
 from core.structure import detect_structure
 from core.fvg import detect_fvg
+from notify.discord import send_discord_debug
+from typing import Tuple
 
-def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> (bool, str):
+def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]:
     # 1. HTF 구조 판단
     htf_struct = detect_structure(htf_df)
     recent = htf_struct['structure'].dropna().iloc[-1] if not htf_struct['structure'].dropna().empty else None
@@ -36,12 +40,14 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> (bool, str):
         direction == 'long' and latest_fvg['type'] == 'bullish'
         and latest_fvg['low'] <= current_price <= latest_fvg['high']
     ):
+        send_discord_debug(f"[IOF] LONG 진입 조건 충족 | 가격: {current_price}", "aggregated")
         return True, direction
 
     elif (
         direction == 'short' and latest_fvg['type'] == 'bearish'
         and latest_fvg['low'] <= current_price <= latest_fvg['high']
     ):
+        send_discord_debug(f"[IOF] SHORT 진입 조건 충족 | 가격: {current_price}", "aggregated")
         return True, direction
 
     return False, None

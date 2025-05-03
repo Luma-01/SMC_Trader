@@ -7,6 +7,7 @@ import requests
 from collections import defaultdict, deque
 from datetime import datetime
 from config.settings import SYMBOLS, TIMEFRAMES, CANDLE_LIMIT
+from notify.discord import send_discord_debug
 
 BINANCE_REST_URL = "https://api.binance.com"
 BINANCE_WS_URL = "wss://stream.binance.com:9443/stream?streams="
@@ -40,7 +41,9 @@ def initialize_historical():
                 candles[symbol][tf].extend(data)
             except Exception as e:
                 failed.append(f"{symbol}-{tf}")
+                send_discord_debug(f"[ERROR] 캔들 로딩 실패: {symbol}-{tf} → {e}", "binance")
     print(f"[HIST] 모든 심볼/타임프레임 캔들 로딩 완료. 실패: {failed if failed else '없음'}")
+    send_discord_debug(f"[HIST] 모든 심볼/타임프레임 캔들 로딩 완료. 실패: {failed if failed else '없음'}", "binance")
 
 # 2. 실시간 WebSocket 연결
 async def stream_live_candles():
@@ -50,21 +53,15 @@ async def stream_live_candles():
     url = BINANCE_WS_URL + "/".join(stream_pairs)
 
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(url) as ws:
-            print("[WS] WebSocket connected.")
-            async for msg in ws:
-                data = msg.json()['data']
-                symbol = data['s']
-                tf = data['k']['i']
-                candle = {
-                    "time": datetime.fromtimestamp(data['k']['t'] / 1000),
-                    "open": float(data['k']['o']),
-                    "high": float(data['k']['h']),
-                    "low": float(data['k']['l']),
-                    "close": float(data['k']['c']),
-                    "volume": float(data['k']['v'])
-                }
-                candles[symbol][tf].append(candle)
+        try:
+            async with session.ws_connect(url) as ws:
+                print("[WS] WebSocket connected.")
+                send_discord_debug("[WS] WebSocket connected.", "binance")
+                async for msg in ws:
+                    data = msg.json()['data']
+                    ...
+        except Exception as e:
+            send_discord_debug(f"[ERROR] WebSocket 연결 실패: {e}", "binance")
 
 # 메인 실행 함수 (초기 로딩 + 실시간 연결)
 async def start_data_feed():

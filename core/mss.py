@@ -1,6 +1,9 @@
+# core/mss.py
+
 import pandas as pd
 from typing import Optional, Dict
 from core.structure import detect_structure  # 이미 만든 구조 분석기 사용
+from notify.discord import send_discord_debug
 
 def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dict]:
     """
@@ -12,6 +15,7 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
     df_struct = df_struct.dropna(subset=['structure'])
 
     if df_struct.empty:
+        send_discord_debug(f"[MSS] 구조 데이터 없음 → MSS 판단 불가", "aggregated")
         return None
 
     # 가장 최근 BOS 방향 구조 탐색 (MSS)
@@ -26,6 +30,7 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
             break
 
     if mss_idx is None or mss_idx < 2:
+        send_discord_debug(f"[MSS] 최근 MSS({direction}) 미탐지", "aggregated")
         return None
 
     # MSS 발생 직전 캔들 범위
@@ -36,7 +41,7 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
         protective_level = df_before_mss['low'].min()
     else:
         protective_level = df_before_mss['high'].max()
-
+    send_discord_debug(f"[MSS] {direction.upper()} | 보호선: {protective_level:.2f} @ {df_struct.iloc[mss_idx]['time']}", "aggregated")
     return {
         "mss_time": df_struct.iloc[mss_idx]['time'],
         "protective_level": protective_level

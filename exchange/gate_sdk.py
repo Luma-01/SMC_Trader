@@ -1,6 +1,9 @@
+# exchange/gate_sdk.py
+
 import os
 from gate_api import ApiClient, Configuration, FuturesApi
 from dotenv import load_dotenv
+from notify.discord import send_discord_debug, send_discord_message
 
 load_dotenv()
 
@@ -27,9 +30,12 @@ def place_order(symbol: str, side: str, size: float, leverage: int = 20):
         }
         response = futures_api.create_futures_order(order)
         print(f"[GATE ORDER] {symbol} {side.upper()} x{size}")
+        send_discord_message(f"[GATE ORDER] {symbol} {side.upper()} x{size}", "gateio")
+        send_discord_debug(f"[DEBUG] 주문 전송됨: {symbol} {side.upper()} x{size}", "gateio")
         return response
     except Exception as e:
         print(f"[ERROR] Gate 주문 실패: {symbol} - {e}")
+        send_discord_debug(f"[GATE] 주문 실패: {symbol} → {e}", "gateio")
         return None
 
 def get_open_position(symbol: str):
@@ -45,4 +51,5 @@ def get_open_position(symbol: str):
                 }
     except Exception as e:
         print(f"[ERROR] Gate 포지션 조회 실패: {symbol} - {e}")
+        send_discord_debug(f"[GATE] 포지션 조회 실패: {symbol} → {e}", "gateio")
     return None

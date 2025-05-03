@@ -1,4 +1,11 @@
+# main.py
+
+import sys
 import asyncio
+
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import pandas as pd
 from config.settings import SYMBOLS, RR, SL_BUFFER
 from core.data_feed import candles, initialize_historical, stream_live_candles
@@ -7,7 +14,7 @@ from core.position import PositionManager
 from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
 from exchange.binance_api import get_max_leverage
 from exchange.gate_sdk import place_order as gate_order, get_open_position as gate_pos
-from notify.discord import send_discord_alert
+from notify.discord import send_discord_debug, send_discord_message
 
 pm = PositionManager()
 
@@ -57,8 +64,12 @@ async def strategy_loop():
                     continue
 
                 htf = pd.DataFrame(df_htf)
+                htf.attrs["symbol"] = symbol
                 ltf = pd.DataFrame(df_ltf)
+                ltf.attrs["symbol"] = symbol
 
+                htf.attrs["symbol"] = symbol
+                ltf.attrs["symbol"] = symbol
                 signal, direction = is_iof_entry(htf, ltf)
 
                 if signal and not pm.has_position(symbol):
@@ -80,7 +91,7 @@ async def strategy_loop():
                 pm.update_price(symbol, current_price, ltf_df=ltf)
 
             except Exception as e:
-                send_discord_alert(f"[ERROR] {symbol} 전략 오류: {e}")
+                send_discord_debug(f"[ERROR] {symbol} 전략 오류: {e}", "aggregated")
 
         await asyncio.sleep(5)
 
