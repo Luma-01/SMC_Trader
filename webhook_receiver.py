@@ -18,6 +18,11 @@ GITHUB_SECRET = os.getenv("GITHUB_SECRET").encode()
 def send_discord_alert(message: str):
     send_discord_message(f"🔔 {message}", "aggregated")
 
+def verify_signature(payload, signature):
+    mac = hmac.new(GITHUB_SECRET, msg=payload, digestmod=hashlib.sha256)
+    expected_signature = 'sha256=' + mac.hexdigest()
+    return hmac.compare_digest(expected_signature, signature)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     print("✅ Webhook POST 요청 받음")
