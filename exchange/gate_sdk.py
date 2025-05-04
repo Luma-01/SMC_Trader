@@ -29,13 +29,16 @@ def place_order(symbol: str, side: str, size: float, leverage: int = 20):
             "leverage": leverage
         }
         response = futures_api.create_futures_order(order)
-        print(f"[GATE ORDER] {symbol} {side.upper()} x{size}")
-        send_discord_message(f"[GATE ORDER] {symbol} {side.upper()} x{size}", "gateio")
-        send_discord_debug(f"[DEBUG] 주문 전송됨: {symbol} {side.upper()} x{size}", "gateio")
+        msg = f"[ORDER] {symbol} {side.upper()} x{size} | 레버리지: {leverage}"
+        print(msg)
+        send_discord_message(msg, "gateio")
+        send_discord_debug(f"[GATE] 주문 전송됨: {symbol} {side.upper()} x{size}", "gateio")
         return response
+    
     except Exception as e:
-        print(f"[ERROR] Gate 주문 실패: {symbol} - {e}")
-        send_discord_debug(f"[GATE] 주문 실패: {symbol} → {e}", "gateio")
+        msg = f"[ERROR] 주문 실패: {symbol} {side.upper()} x{size} → {e}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
         return None
 
 def get_open_position(symbol: str):
@@ -50,6 +53,8 @@ def get_open_position(symbol: str):
                     "entry": float(p.entry_price)
                 }
     except Exception as e:
-        print(f"[ERROR] Gate 포지션 조회 실패: {symbol} - {e}")
-        send_discord_debug(f"[GATE] 포지션 조회 실패: {symbol} → {e}", "gateio")
+        msg = f"[ERROR] 포지션 조회 실패: {symbol} → {e}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
+
     return None

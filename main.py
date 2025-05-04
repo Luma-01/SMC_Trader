@@ -28,7 +28,8 @@ def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
     return sl, tp
 
 def initialize():
-    print("[INIT] 초기 세팅 중...")
+    print("🚀 [INIT] 초기 세팅 시작")
+    send_discord_message("🚀 [INIT] 초기 세팅 시작", "aggregated")
     initialize_historical()
     failed_positions = []
     failed_leverage = []
@@ -50,16 +51,24 @@ def initialize():
             failed_leverage.append(symbol)
 
     if failed_positions:
-        print(f"[WARN] 포지션 조회 실패 심볼: {', '.join(failed_positions)}")
+        warn_msg = f"⚠️ 포지션 조회 실패: {', '.join(failed_positions)}"
+        print(f"[WARN] {warn_msg}")
+        send_discord_debug(warn_msg, "aggregated")
     if failed_leverage:
-        print(f"[WARN] 레버리지 설정 실패 심볼: {', '.join(failed_leverage)}")
-
+        warn_msg = f"⚠️ 레버리지 설정 실패: {', '.join(failed_leverage)}"
+        print(f"[WARN] {warn_msg}")
+        send_discord_debug(warn_msg, "aggregated")
 async def strategy_loop():
+    print("📈 전략 루프 시작됨 (5초 간격)")
+    send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
         for symbol in SYMBOLS:
             try:
-                df_htf = candles[symbol]['1h']
-                df_ltf = candles[symbol]['5m']
+                df_htf = candles.get(symbol, {}).get('1h')
+                df_ltf = candles.get(symbol, {}).get('5m')
+                if not df_htf or not df_ltf:
+                    send_discord_debug(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)", "aggregated")
+                    continue
                 if len(df_htf) < 30 or len(df_ltf) < 30:
                     continue
 
@@ -73,7 +82,10 @@ async def strategy_loop():
                 signal, direction = is_iof_entry(htf, ltf)
 
                 if signal and not pm.has_position(symbol):
-                    entry = ltf['close'].iloc[-1]
+                    if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
+                        send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
+                        continue
+                    entry = ltf['close'].dropna().iloc[-1]
                     sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
 
                     qty = SYMBOLS[symbol]['minQty']
@@ -91,7 +103,9 @@ async def strategy_loop():
                 pm.update_price(symbol, current_price, ltf_df=ltf)
 
             except Exception as e:
-                send_discord_debug(f"[ERROR] {symbol} 전략 오류: {e}", "aggregated")
+                error_msg = f"❌ [ERROR] {symbol} 전략 오류: {e}"
+                print(error_msg)
+                send_discord_debug(error_msg, "aggregated")
 
         await asyncio.sleep(5)
 

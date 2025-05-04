@@ -29,8 +29,9 @@ def fetch_max_leverages():
             for entry in data
         }
     except Exception as e:
-        print(f"[ERROR] 최대 레버리지 조회 실패: {e}")
-        send_discord_debug(f"[ERROR] 최대 레버리지 조회 실패: {e}", "binance")
+        msg = f"❌ [BINANCE] 거래량 기준 심볼 조회 실패: {e}"
+        print(msg)
+        send_discord_debug(msg, "binance")
         return {}
 
 def fetch_top_futures_symbols(limit=10):
@@ -40,8 +41,9 @@ def fetch_top_futures_symbols(limit=10):
         top_symbols = [s['symbol'] for s in sorted_by_volume if s['symbol'].endswith('USDT')][:limit]
         return top_symbols
     except Exception as e:
-        print(f"[ERROR] 거래량 기준 심볼 조회 실패: {e}")
-        send_discord_debug(f"[ERROR] 거래량 기준 심볼 조회 실패: {e}", "binance")
+        msg = f"❌ [BINANCE] 거래량 기준 심볼 조회 실패: {e}"
+        print(msg)
+        send_discord_debug(msg, "binance")
         return []
 
 def fetch_symbol_info(symbols):
@@ -52,7 +54,11 @@ def fetch_symbol_info(symbols):
 
     for symbol in symbols:
         if symbol not in all_symbols:
+            msg = f"⚠️ [BINANCE] 심볼 누락: {symbol} - exchangeInfo 응답에 없음"
+            print(msg)
+            send_discord_debug(msg, "binance")
             continue
+        
         s = all_symbols[symbol]
         lot_size = next(f for f in s['filters'] if f['filterType'] == 'LOT_SIZE')
         min_qty = float(lot_size['minQty'])

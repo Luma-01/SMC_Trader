@@ -3,6 +3,7 @@
 from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
 from notify.discord import send_discord_message, send_discord_debug
+from exchange.binance_api import place_stop_loss_order, cancel_order
 
 class PositionManager:
     def __init__(self):
@@ -19,15 +20,18 @@ class PositionManager:
             "tp": tp,
             "half_exit": False,
             "protective_level": None,
-            "mss_triggered": False
+            "mss_triggered": False,
+            "sl_order_id": None
         }
-        send_discord_message(
-            f"[ENTRY] {symbol} | {direction.upper()} @ {entry:.2f} | SL: {sl:.2f} | TP: {tp:.2f}",
-            "aggregated_message"
-        )
-        send_discord_debug(
-            f"[DEBUG] {symbol} 진입 포지션 등록됨", "aggregated"
-        )
+
+        # 진입 시 SL 주문 생성
+        order_id = place_stop_loss_order(symbol, direction, sl)
+        if order_id:
+            self.positions[symbol]['sl_order_id'] = order_id
+            send_discord_debug(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}", "aggregated")
+
+        send_discord_message(f"[ENTRY] {symbol} | {direction.upper()} @ {entry:.4f} | SL: {sl:.4f} | TP: {tp:.4f}", "aggregated")
+        send_discord_debug(f"[ENTRY] 포지션 등록 완료 | {symbol} → SL: {sl:.4f}, TP: {tp:.4f}", "aggregated")
 
     def update_price(self, symbol: str, current_price: float, ltf_df=None):
         if symbol not in self.positions:
@@ -48,7 +52,17 @@ class PositionManager:
                 pos['mss_triggered'] = True
                 pos['protective_level'] = mss_data['protective_level']
                 protective = mss_data['protective_level']
-                send_discord_debug(f"[DEBUG] {symbol} MSS 보호선 설정됨", "aggregated")
+                send_discord_debug(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}", "aggregated")
+
+                # 기존 SL 주문 있으면 취소
+                if pos.get("sl_order_id"):
+                    cancel_order(symbol, pos["sl_order_id"])
+                    send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
+
+                # 새 SL 주문 설정
+                sl_order_id = place_stop_loss_order(symbol, direction, protective)
+                pos["sl_order_id"] = sl_order_id
+                send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})", "aggregated")
 
                 # MSS 먼저 발생했을 경우 → 즉시 전체 종료
                 if ((direction == 'long' and current_price <= protective) or
@@ -92,6 +106,11 @@ class PositionManager:
 
     def close(self, symbol: str):
         if symbol in self.positions:
+            # SL 주문 취소 시도
+            sl_order_id = self.positions[symbol].get("sl_order_id")
+            if sl_order_id:
+                cancel_order(symbol, sl_order_id)
+                send_discord_debug(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})", "aggregated")
             del self.positions[symbol]
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
@@ -104,3 +123,4 @@ class PositionManager:
             "protective_level": None,
             "mss_triggered": False
         }
+

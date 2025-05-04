@@ -34,16 +34,24 @@ def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMI
 
 def initialize_historical():
     failed = []
+    total = 0
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
             try:
                 data = load_historical_candles(symbol, tf)
                 candles[symbol][tf].extend(data)
+                total += 1
             except Exception as e:
                 failed.append(f"{symbol}-{tf}")
-                send_discord_debug(f"[ERROR] 캔들 로딩 실패: {symbol}-{tf} → {e}", "binance")
-    print(f"[HIST] 모든 심볼/타임프레임 캔들 로딩 완료. 실패: {failed if failed else '없음'}")
-    send_discord_debug(f"[HIST] 모든 심볼/타임프레임 캔들 로딩 완료. 실패: {failed if failed else '없음'}", "binance")
+                send_discord_debug(f"❌ [BINANCE] 캔들 로딩 실패: {symbol}-{tf} → {e}", "binance")
+    msg = (
+        f"📊 [BINANCE] 캔들 로딩 완료\n"
+        f" - 총 요청: {total}\n"
+        f" - 실패: {len(failed)}\n"
+        f" - 실패 목록: {', '.join(failed) if failed else '없음'}"
+    )
+    print(msg)
+    send_discord_debug(msg, "binance")
 
 # 2. 실시간 WebSocket 연결
 async def stream_live_candles():
@@ -55,13 +63,36 @@ async def stream_live_candles():
     async with aiohttp.ClientSession() as session:
         try:
             async with session.ws_connect(url) as ws:
-                print("[WS] WebSocket connected.")
-                send_discord_debug("[WS] WebSocket connected.", "binance")
+                print("✅ [WS] Binance WebSocket 연결 성공!")
+                send_discord_debug("✅ [BINANCE] WebSocket 연결 성공!", "binance")
                 async for msg in ws:
-                    data = msg.json()['data']
-                    ...
+                    raw = msg.json()
+                    data = raw['data']
+                    stream = raw['stream']  # e.g., btcusdt@kline_1m
+                    symbol_tf = stream.split('@kline_')
+                    if len(symbol_tf) != 2:
+                        continue
+                    symbol = symbol_tf[0].upper()
+                    tf = symbol_tf[1]
+
+                    k = data['k']
+                    if not k['x']:  # 캔들 미완성 시 무시
+                        continue
+                    candle = {
+                        "time": datetime.fromtimestamp(k['t'] / 1000),
+                        "open": float(k['o']),
+                        "high": float(k['h']),
+                        "low": float(k['l']),
+                        "close": float(k['c']),
+                        "volume": float(k['v'])
+                    }
+                    candles[symbol][tf].append(candle)
+                    send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                    
+
         except Exception as e:
-            send_discord_debug(f"[ERROR] WebSocket 연결 실패: {e}", "binance")
+            msg = f"❌ [BINANCE] WebSocket 연결 실패: {e}"
+            print(msg)
+            send_discord_debug(msg, "binance")
 
 # 메인 실행 함수 (초기 로딩 + 실시간 연결)
 async def start_data_feed():

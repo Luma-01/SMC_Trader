@@ -1,3 +1,5 @@
+#test_position_flow.py
+
 import os
 import requests
 from dotenv import load_dotenv
@@ -13,21 +15,22 @@ WEBHOOKS = {
     "aggregated_message": os.getenv("SEND_MESSAGE_AGGREGATED"),
 }
 
-def _send_discord(message: str, target: str):
-    url = WEBHOOKS.get(target)
+def _send_discord(message: str, category: str, exchange: str):
+    key = f"{exchange}_{category}"
+    url = WEBHOOKS.get(key)
     if not url:
-        print(f"[DISCORD] 웹훅 URL 없음: {target}")
+        print(f"[DISCORD] ❌ 웹훅 URL 없음: {key}")
         return
     try:
         data = {"content": message}
         response = requests.post(url, json=data)
         if response.status_code not in (200, 204):
-            print(f"[DISCORD ERROR] {response.status_code}: {response.text}")
+            print(f"[DISCORD] ❌ 응답 오류 {response.status_code} → {response.text}")
     except Exception as e:
-        print(f"[DISCORD ERROR] 전송 실패: {e}")
+        print(f"[DISCORD] ❌ 전송 실패 → {e}")
 
 def send_discord_debug(message: str, exchange: str = "aggregated"):
-    _send_discord(message, f"{exchange}_debug")
+    _send_discord(message, "debug", exchange)
 
 def send_discord_message(message: str, exchange: str = "aggregated"):
-    _send_discord(message, f"{exchange}_message")
+    _send_discord(message, "message", exchange)
