@@ -15,7 +15,8 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
     df_struct = df_struct.dropna(subset=['structure'])
 
     if df_struct.empty:
-        send_discord_debug(f"[MSS] ❌ 구조 데이터 없음 → MSS 판단 불가", "aggregated")
+        print(f"[MSS] ❌ 구조 데이터 없음 → MSS 판단 불가")
+        #send_discord_debug(f"[MSS] ❌ 구조 데이터 없음 → MSS 판단 불가", "aggregated")
         return None
 
     # 가장 최근 BOS 방향 구조 탐색 (MSS)
@@ -30,11 +31,13 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
             break
 
     if mss_idx is None:
-        send_discord_debug(f"[MSS] ❌ {direction.upper()} MSS 미탐지 (BOS 구조 없음)", "aggregated")
+        print(f"[MSS] ❌ {direction.upper()} MSS 미탐지 (BOS 구조 없음)")
+        #send_discord_debug(f"[MSS] ❌ {direction.upper()} MSS 미탐지 (BOS 구조 없음)", "aggregated")
         return None
     
     if mss_idx < 2:
-        send_discord_debug(f"[MSS] ❌ MSS는 있으나 직전 스윙 기준부족 (mss_idx={mss_idx})", "aggregated")
+        print(f"[MSS] ❌ MSS는 있으나 직전 스윙 기준부족 (mss_idx={mss_idx})")
+        #send_discord_debug(f"[MSS] ❌ MSS는 있으나 직전 스윙 기준부족 (mss_idx={mss_idx})", "aggregated")
         return None
 
     # MSS 발생 직전 캔들 범위
@@ -45,10 +48,8 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
         protective_level = df_before_mss['low'].min()
     else:
         protective_level = df_before_mss['high'].max()
-    send_discord_debug(
-        f"[MSS] ✅ {direction.upper()} MSS 감지 | 보호선: {protective_level:.2f} @ {df_struct.iloc[mss_idx]['time']}",
-        "aggregated"
-    )
+        print(f"[MSS] ✅ {direction.upper()} MSS 감지 | 보호선: {protective_level:.2f} @ {df_struct.iloc[mss_idx]['time']}")
+        send_discord_debug(f"[MSS] ✅ {direction.upper()} MSS 감지 | 보호선: {protective_level:.2f} @ {df_struct.iloc[mss_idx]['time']}", "aggregated")
     
     return {
         "mss_time": df_struct.iloc[mss_idx]['time'],

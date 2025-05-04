@@ -106,7 +106,7 @@ def place_order_with_tp_sl(symbol: str, side: str, quantity: float, tp: float, s
             reduceOnly=True,
             positionSide=position_side
         ))
-
+        print(f"[TP/SL] {symbol} 진입 및 TP/SL 설정 → TP: {tp}, SL: {sl}")
         send_discord_message(f"[TP/SL] {symbol} 진입 및 TP/SL 설정 → TP: {tp}, SL: {sl}", "binance")
         return orders
     
