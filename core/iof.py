@@ -9,8 +9,16 @@ from typing import Tuple
 def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]:
     # 1. HTF 구조 판단
     htf_struct = detect_structure(htf_df)
+    if htf_struct is None or not isinstance(htf_struct, pd.DataFrame) or 'structure' not in htf_struct.columns:
+        send_discord_debug("[IOF] ❌ detect_structure() 반환 오류 → 진입 판단 불가", "aggregated")
+        return False, None
+    if not isinstance(htf_struct, pd.DataFrame) or 'structure' not in htf_struct.columns:
+        print("[IOF] ❌ detect_structure() 반환 오류 → 진입 판단 불가")
+        send_discord_debug("[IOF] ❌ detect_structure() 반환 오류 → 진입 판단 불가", "aggregated")
+        return False, None
     structure_series = htf_struct['structure'].dropna()
     if structure_series.empty:
+        print("[IOF] ❌ 구조 데이터 없음 → 진입 판단 불가")
         send_discord_debug("[IOF] ❌ 구조 데이터 없음 → 진입 판단 불가", "aggregated")
         return False, None
     recent = structure_series.iloc[-1]

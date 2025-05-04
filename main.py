@@ -7,6 +7,7 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import pandas as pd
+from core.structure import detect_structure
 from config.settings import SYMBOLS, RR, SL_BUFFER
 from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
@@ -36,9 +37,11 @@ def initialize():
     for symbol, data in SYMBOLS.items():
         try:
             pos = binance_pos(symbol)
-            if pos:
+            if isinstance(pos, dict) and 'entry' in pos and 'direction' in pos:
                 sl, tp = calculate_sl_tp(pos['entry'], pos['direction'], SL_BUFFER, RR)
                 pm.init_position(symbol, pos['direction'], pos['entry'], sl, tp)
+            else:
+                failed_positions.append(symbol)
         except Exception:
             failed_positions.append(symbol)
         try:
@@ -64,9 +67,16 @@ async def strategy_loop():
     while True:
         for symbol in SYMBOLS:
             try:
-                df_htf = candles.get(symbol, {}).get('1h')
-                df_ltf = candles.get(symbol, {}).get('5m')
+                df_htf = candles.get(symbol, {}).get('1h', None)
+                df_ltf = candles.get(symbol, {}).get('5m', None)
+
+                if df_htf is None or df_ltf is None:
+                    print(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)")
+                    send_discord_debug(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)", "aggregated")
+                    continue
+
                 if not df_htf or not df_ltf:
+                    print(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)")
                     send_discord_debug(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)", "aggregated")
                     continue
                 if len(df_htf) < 30 or len(df_ltf) < 30:
@@ -77,12 +87,40 @@ async def strategy_loop():
                 ltf = pd.DataFrame(df_ltf)
                 ltf.attrs["symbol"] = symbol
 
-                htf.attrs["symbol"] = symbol
-                ltf.attrs["symbol"] = symbol
-                signal, direction = is_iof_entry(htf, ltf)
+                try:
+                    result = is_iof_entry(htf, ltf)
+                    htf_struct = detect_structure(htf)
+                    if 'structure' not in htf_struct.columns:
+                        print(f"[{symbol}] ❌ 구조 컬럼 없음")
+                        send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
+                        continue
 
-                if signal and not pm.has_position(symbol):
+                    result = is_iof_entry(htf_struct, ltf)
+                    if not isinstance(result, tuple) or len(result) != 2:
+                        print(f"[{symbol}] ❌ IOF 결과 형식 오류: {result}")
+                        send_discord_debug(f"[{symbol}] ❌ IOF 결과 형식 오류: {result}", "aggregated")
+                        continue
+                    signal, direction = result
+                except Exception as e:
+                    print(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}")
+                    send_discord_debug(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}", "aggregated")
+                    continue
+
+                if not signal or not direction:
+                    print(f"[{symbol}] 🚫 IOF 조건 불충족 → signal={signal}, direction={direction}")
+                    # send_discord_debug(f"[{symbol}] 🚫 IOF 조건 불충족 → signal={signal}, direction={direction}", "aggregated")
+                    continue
+
+                if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
+                    print(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음")
+                    send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
+                    continue
+
+                entry = ltf['close'].dropna().iloc[-1]
+
+                if not pm.has_position(symbol):
                     if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
+                        print(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음")
                         send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
                         continue
                     entry = ltf['close'].dropna().iloc[-1]

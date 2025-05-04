@@ -16,7 +16,9 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
     last_type = last_sent_structure.get(symbol)
 
     if len(df) < 3:
-        send_discord_debug("[STRUCTURE] 캔들 수 부족으로 구조 분석 생략", "aggregated")
+        print("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가")
+        send_discord_debug("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가", "aggregated")
+        df['structure'] = None
         return df
     
     i = len(df) - 1  # 마지막 캔들
@@ -48,13 +50,16 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
             df.at[df.index[i], 'structure'] = 'CHoCH_down'
             structure_type = 'CHoCH_down'
     except Exception as e:
+        print(f"[STRUCTURE] 예외 발생: {e}")
         send_discord_debug(f"[STRUCTURE] 예외 발생: {e}", "aggregated")
+        df['structure'] = None
         return df
 
     if structure_type:
         df.at[df.index[i], 'structure'] = structure_type
         if structure_type != last_type:
-            send_discord_debug(
-                f"[STRUCTURE] {symbol} → {structure_type} 발생 | 시각: {df['time'].iloc[i]}", "aggregated"
-            )
+            print(f"[STRUCTURE] {symbol} → {structure_type} 발생 | 시각: {df['time'].iloc[i]}")
+            send_discord_debug(f"[STRUCTURE] {symbol} → {structure_type} 발생 | 시각: {df['time'].iloc[i]}", "aggregated")
             last_sent_structure[symbol] = structure_type
+
+    return df

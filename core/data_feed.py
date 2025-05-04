@@ -21,6 +21,10 @@ def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMI
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     response = requests.get(url, params=params)
     data = response.json()
+
+    if not isinstance(data, list) or len(data) == 0:
+        raise ValueError(f"{symbol}-{interval} 캔들 로딩 실패 또는 빈 응답")
+
     return [
         {
             "time": datetime.fromtimestamp(d[0] / 1000),
