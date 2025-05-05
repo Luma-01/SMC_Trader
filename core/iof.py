@@ -22,16 +22,14 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]
         print("[IOF] ❌ 구조 데이터 없음 → 진입 판단 불가")
         #send_discord_debug("[IOF] ❌ 구조 데이터 없음 → 진입 판단 불가", "aggregated")
         return False, None
+    
     recent = structure_series.iloc[-1]
-
-    direction = None
-    if recent == 'BOS_up':
+    if recent in ['BOS_up', 'CHoCH_up']:
         direction = 'long'
-    elif recent == 'BOS_down':
+    elif recent in ['BOS_down', 'CHoCH_down']:
         direction = 'short'
     else:
-        print("[IOF] ❌ BOS 미충족 → 진입 불가")
-        #send_discord_debug("[IOF] ❌ BOS 미충족 → 진입 불가", "aggregated")
+        print(f"[IOF] ❌ 최근 구조 신호 미충족 → 최근 구조: {recent}")
         return False, None
 
     # 2. Premium / Discount 필터
@@ -59,23 +57,15 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]
         #send_discord_debug("[IOF] ❌ FVG 감지 안됨", "aggregated")
         return False, None
 
-    latest_fvg = fvg_zones[-1]
-    if (
-        direction == 'long' and latest_fvg['type'] == 'bullish'
-        and latest_fvg['low'] <= current_price <= latest_fvg['high']
-    ):
-        print(f"[IOF] LONG 진입 조건 충족 | 가격: {current_price}")
-        #send_discord_debug(f"[IOF] LONG 진입 조건 충족 | 가격: {current_price}", "aggregated")
-        return True, direction
+    for fvg in reversed(fvg_zones):
+        if direction == 'long' and fvg['type'] == 'bullish':
+            if fvg['low'] <= current_price <= fvg['high']:
+                print(f"[IOF] ✅ LONG 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}")
+                return True, direction
+        elif direction == 'short' and fvg['type'] == 'bearish':
+            if fvg['low'] <= current_price <= fvg['high']:
+                print(f"[IOF] ✅ SHORT 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}")
+                return True, direction
 
-    elif (
-        direction == 'short' and latest_fvg['type'] == 'bearish'
-        and latest_fvg['low'] <= current_price <= latest_fvg['high']
-    ):
-        print(f"[IOF] SHORT 진입 조건 충족 | 가격: {current_price}")
-        #send_discord_debug(f"[IOF] SHORT 진입 조건 충족 | 가격: {current_price}", "aggregated")
-        return True, direction
-
-    print("[IOF] ❌ FVG 영역 내 진입 아님")
-    #send_discord_debug("[IOF] ❌ FVG 영역 내 진입 아님", "aggregated")
+    print(f"[IOF] ❌ FVG 영역 내 진입 아님 → 현재가: {current_price} | FVG 개수: {len(fvg_zones)}")
     return False, None

@@ -87,14 +87,15 @@ async def strategy_loop():
                 ltf = pd.DataFrame(df_ltf)
                 ltf.attrs["symbol"] = symbol
 
-                try:
-                    result = is_iof_entry(htf, ltf)
-                    htf_struct = detect_structure(htf)
-                    if 'structure' not in htf_struct.columns:
-                        print(f"[{symbol}] ❌ 구조 컬럼 없음")
-                        send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
-                        continue
+                #print(f"[DEBUG] {symbol} HTF 마지막 5개 캔들:\n{htf.tail(5)}")
 
+                htf_struct = detect_structure(htf)
+                if 'structure' not in htf_struct.columns:
+                    print(f"[{symbol}] ❌ 구조 컬럼 없음")
+                    send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
+                    continue
+
+                try:
                     result = is_iof_entry(htf_struct, ltf)
                     if not isinstance(result, tuple) or len(result) != 2:
                         print(f"[{symbol}] ❌ IOF 결과 형식 오류: {result}")
@@ -116,16 +117,9 @@ async def strategy_loop():
                     send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
                     continue
 
-                entry = ltf['close'].dropna().iloc[-1]
-
                 if not pm.has_position(symbol):
-                    if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
-                        print(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음")
-                        send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
-                        continue
                     entry = ltf['close'].dropna().iloc[-1]
                     sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
-
                     qty = SYMBOLS[symbol]['minQty']
                     lev = SYMBOLS[symbol]['leverage']
 

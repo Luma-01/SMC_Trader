@@ -6,12 +6,19 @@ from typing import List, Dict
 def detect_fvg(df: pd.DataFrame) -> List[Dict]:
     fvg_zones = []
 
+    # 기본 tick size (추후 get_tick_size(symbol)로 교체 가능)
+    tick_size = 0.0001
+    min_width = tick_size * 3  # 최소 유효 폭 조건
+
     for i in range(2, len(df)):
         c1 = df.iloc[i - 2]
         c3 = df.iloc[i]
 
         # 상승 FVG
         if c1['high'] < c3['low']:
+            width = c3['low'] - c1['high']
+            if width < min_width:
+                continue
             fvg_zones.append({
                 "type": "bullish",
                 "low": c3['low'],
@@ -21,6 +28,9 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
 
         # 하락 FVG
         elif c1['low'] > c3['high']:
+            width = c1['low'] - c3['high']
+            if width < min_width:
+                continue
             fvg_zones.append({
                 "type": "bearish",
                 "low": c1['low'],

@@ -57,17 +57,28 @@ class PositionManager:
                 print(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}")
                 send_discord_debug(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}", "aggregated")
 
-                # 기존 SL 주문 있으면 취소
                 if pos.get("sl_order_id"):
                     cancel_order(symbol, pos["sl_order_id"])
                     print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
                     send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
 
+                # 보호선 도달 여부 먼저 체크 (주문 전에 종료)
+                if ((direction == 'long' and current_price <= protective) or
+                    (direction == 'short' and current_price >= protective)):
+                    print(f"[MSS EARLY STOP] {symbol} 보호선 도달 → SL 갱신 전 종료")
+                    send_discord_message(f"[MSS EARLY STOP] {symbol} 보호선 도달 → SL 갱신 전 종료", "aggregated")
+                    self.close(symbol)
+                    return
+
                 # 새 SL 주문 설정
                 sl_order_id = place_stop_loss_order(symbol, direction, protective)
-                pos["sl_order_id"] = sl_order_id
-                print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})")
-                send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})", "aggregated")
+                if sl_order_id:
+                    pos["sl_order_id"] = sl_order_id
+                    print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})")
+                    send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})", "aggregated")
+                else:
+                    print(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}")
+                    send_discord_debug(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}", "aggregated")
 
                 # MSS 먼저 발생했을 경우 → 즉시 전체 종료
                 if ((direction == 'long' and current_price <= protective) or
