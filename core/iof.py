@@ -35,21 +35,9 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]
         return False, None
 
     # 2. Premium / Discount 필터
-    htf_high = htf_df['high'].max()
-    htf_low = htf_df['low'].min()
-    mid_price = (htf_high + htf_low) / 2
-    if ltf_df.empty or 'close' not in ltf_df.columns or ltf_df['close'].dropna().empty:
-        print("[IOF] ❌ LTF 데이터 부족 → 진입 판단 불가")
-        #send_discord_debug("[IOF] ❌ LTF 데이터 부족 → 진입 판단 불가", "aggregated")
-        return False, None
-    current_price = ltf_df['close'].dropna().iloc[-1]
-    if direction == 'long' and current_price > mid_price:
-        print(f"[IOF] ❌ LONG인데 가격이 프리미엄 영역 ({current_price:.2f} > {mid_price:.2f})")
-        #send_discord_debug(f"[IOF] ❌ LONG인데 가격이 프리미엄 영역 ({current_price:.2f} > {mid_price:.2f})", "aggregated")
-        return False, None
-    if direction == 'short' and current_price < mid_price:
-        print(f"[IOF] ❌ SHORT인데 가격이 디스카운트 영역 ({current_price:.2f} < {mid_price:.2f})")
-        #send_discord_debug(f"[IOF] ❌ SHORT인데 가격이 디스카운트 영역 ({current_price:.2f} < {mid_price:.2f})", "aggregated")
+    passed, reason, mid, ote_l, ote_h = refined_premium_discount_filter(htf_df, ltf_df, direction)
+    if not passed:
+        print(f"[IOF] ❌ {reason}")
         return False, None
 
     # 3. FVG 진입 여부
