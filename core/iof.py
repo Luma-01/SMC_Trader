@@ -5,6 +5,7 @@ from core.structure import detect_structure
 from core.fvg import detect_fvg
 from core.ob import detect_ob
 from core.bb import detect_bb
+from core.utils import refined_premium_discount_filter
 from notify.discord import send_discord_debug
 from typing import Tuple
 
