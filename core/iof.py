@@ -100,5 +100,5 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]
         send_discord_debug("[IOF] ❌ BB 감지 안됨", "aggregated")            
             
     print(f"[IOF] ❌ FVG/OB/BB 영역 내 진입 아님 → 현재가: {current_price}")
-    send_discord_debug(f"[IOF] ❌ FVG/OB/BB 영역 내 진입 아님 → 현재가: {current_price}", "aggregated")
+    #send_discord_debug(f"[IOF] ❌ FVG/OB/BB 영역 내 진입 아님 → 현재가: {current_price}", "aggregated")
     return False, None

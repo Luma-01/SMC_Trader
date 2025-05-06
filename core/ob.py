@@ -41,6 +41,6 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
     else:
         msg = f"[OB] {symbol} - 감지된 Order Block 없음"
     print(msg)
-    send_discord_debug(msg, "aggregated")
+    #send_discord_debug(msg, "aggregated")
 
     return ob_zones

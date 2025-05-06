@@ -40,5 +40,5 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict]) -> List[Dict]:
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     print(f"[BB] {symbol} - BB {len(bb_zones)}개 감지됨")
-    send_discord_debug(f"[BB] {symbol} - BB {len(bb_zones)}개 감지됨", "aggregated")
+    #send_discord_debug(f"[BB] {symbol} - BB {len(bb_zones)}개 감지됨", "aggregated")
     return bb_zones

@@ -2,6 +2,7 @@
 
 import pandas as pd
 from typing import List, Dict
+from notify.discord import send_discord_debug
 
 def detect_fvg(df: pd.DataFrame) -> List[Dict]:
     fvg_zones = []
@@ -38,7 +39,6 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
                 "time": df['time'].iloc[i]
             })
 
-    from notify.discord import send_discord_debug
     symbol = df.attrs.get("symbol", "UNKNOWN")
     count = len(fvg_zones)
     print(f"📉 [FVG] {symbol} - FVG {count}개 감지됨")
