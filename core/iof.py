@@ -39,7 +39,7 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]
     passed, reason, mid, ote_l, ote_h = refined_premium_discount_filter(htf_df, ltf_df, direction)
     if not passed:
         print(f"[IOF] ❌ {reason}")
-        return False, None
+        return False, direction
 
     # 3. FVG 진입 여부
     fvg_zones = detect_fvg(ltf_df)
