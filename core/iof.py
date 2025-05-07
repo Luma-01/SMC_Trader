@@ -36,10 +36,16 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame) -> Tuple[bool, str]
         return False, None
 
     # 2. Premium / Discount 필터
-    passed, reason, mid, ote_l, ote_h = refined_premium_discount_filter(htf_df, ltf_df, direction)
-    if not passed:
-        print(f"[IOF] ❌ {reason}")
+    #passed, reason, mid, ote_l, ote_h = refined_premium_discount_filter(htf_df, ltf_df, direction)
+    #if not passed:
+        #print(f"[IOF] ❌ {reason}")
+        #return False, direction
+
+    # current_price 직접 정의 (PD ZONE 비활 임시 테스트용)
+    if ltf_df.empty or 'close' not in ltf_df.columns or ltf_df['close'].dropna().empty:
+        print("[IOF] ❌ LTF 종가 없음")
         return False, direction
+    current_price = ltf_df['close'].dropna().iloc[-1]
 
     # 3. FVG 진입 여부
     fvg_zones = detect_fvg(ltf_df)
