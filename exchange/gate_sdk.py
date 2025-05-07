@@ -83,3 +83,60 @@ def get_quantity_precision(symbol: str) -> int:
         print(f"[GATE] 수량 precision 조회 실패: {e}")
         send_discord_debug(f"[GATE] 수량 precision 조회 실패 → {e}", "gateio")
     return 3
+    
+# ✅ TP/SL 포함 주문
+def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: float, leverage: int = 20):
+    try:
+        # 진입
+        entry_order = {
+            "contract": symbol,
+            "size": size if side == "buy" else -size,
+            "price": 0,
+            "tif": "ioc",
+            "reduce_only": False,
+            "auto_size": "",
+            "text": "SMC-BOT",
+            "leverage": leverage
+        }
+        futures_api.create_futures_order(entry_order)
+
+        # TP (절반 익절)
+        tp_order = {
+            "contract": symbol,
+            "size": round(size / 2, 3) if side == "buy" else round(-size / 2, 3),
+            "price": tp,
+            "tif": "gtc",
+            "reduce_only": True,
+            "auto_size": "",
+            "text": "TP-SMC",
+            "leverage": leverage
+        }
+        futures_api.create_futures_order(tp_order)
+
+        # SL (전체 청산)
+        sl_order = {
+            "contract": symbol,
+            "size": size if side == "buy" else -size,
+            "price": 0,
+            "tif": "gtc",
+            "stop": {
+                "price": sl,
+                "type": "mark_price"
+            },
+            "reduce_only": True,
+            "auto_size": "",
+            "text": "SL-SMC",
+            "leverage": leverage
+        }
+        futures_api.create_futures_order(sl_order)
+
+        msg = f"[TP/SL] {symbol} 진입 및 TP/SL 설정 완료 → TP: {tp}, SL: {sl}"
+        print(msg)
+        send_discord_message(msg, "gateio")
+        return True
+
+    except Exception as e:
+        msg = f"[ERROR] TP/SL 포함 주문 실패: {symbol} → {e}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
+        return False
