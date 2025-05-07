@@ -13,9 +13,10 @@ from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
-from exchange.binance_api import get_max_leverage
+from exchange.binance_api import get_max_leverage, get_available_balance, get_quantity_precision
 from exchange.gate_sdk import place_order as gate_order, get_open_position as gate_pos
 from notify.discord import send_discord_debug, send_discord_message
+
 
 pm = PositionManager()
 
@@ -120,8 +121,14 @@ async def strategy_loop():
                 if not pm.has_position(symbol):
                     entry = ltf['close'].dropna().iloc[-1]
                     sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
-                    qty = SYMBOLS[symbol]['minQty']
+                    balance = get_available_balance()
                     lev = SYMBOLS[symbol]['leverage']
+                    risk_usdt = balance * 0.3
+                    qty_precision = get_quantity_precision(symbol)
+                    qty = round(risk_usdt / entry, qty_precision)
+                    if qty <= 0:
+                        print(f"[{symbol}] ❌ 진입 실패: 계산된 수량이 0 이하 (balance={balance}, entry={entry}, qty={qty})")
+                        continue
 
                     # 진입
                     binance_order(symbol, 'buy' if direction == 'long' else 'sell', qty)
