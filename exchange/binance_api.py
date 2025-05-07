@@ -8,7 +8,8 @@ from binance.enums import (
     SIDE_BUY, SIDE_SELL,
     ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT, TIME_IN_FORCE_GTC
 )
-
+from binance.exceptions import BinanceAPIException
+from typing import Optional
 
 
 load_dotenv()
@@ -172,3 +173,32 @@ def cancel_order(symbol: str, order_id: int):
         print(f"[ERROR] 주문 취소 실패: {symbol} - {e}")
         send_discord_debug(f"[BINANCE] 주문 취소 실패: {symbol} → {e}", "binance")
         return None
+        
+# ✅ 사용 가능 잔고 조회 (USDT 기준)
+def get_available_balance() -> float:
+    try:
+        balance = client.futures_account_balance()
+        for asset in balance:
+            if asset['asset'] == 'USDT':
+                return float(asset['availableBalance'])
+    except BinanceAPIException as e:
+        print(f"[BINANCE] 잔고 조회 실패: {e}")
+        send_discord_debug(f"[BINANCE] 잔고 조회 실패 → {e}", "binance")
+    return 0.0
+
+
+# ✅ 심볼별 수량 소수점 자리수 조회
+def get_quantity_precision(symbol: str) -> int:
+    try:
+        exchange_info = client.futures_exchange_info()
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol.upper():
+                for f in s['filters']:
+                    if f['filterType'] == 'LOT_SIZE':
+                        step_size = float(f['stepSize'])
+                        precision = abs(int(round(-1 * math.log10(step_size))))
+                        return precision
+    except BinanceAPIException as e:
+        print(f"[BINANCE] 수량 자리수 조회 실패: {e}")
+        send_discord_debug(f"[BINANCE] 수량 자리수 조회 실패 → {e}", "binance")
+    return 3  # 기본값
