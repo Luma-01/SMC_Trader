@@ -111,16 +111,17 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         }
         futures_api.create_futures_order(tp_order)
 
-        # SL (트리거 주문)
+        # SL (마크가격 기준 스탑 마켓)
         sl_order = {
             "contract": symbol,
             "size": size if side == "buy" else -size,
+            "price": 0,
             "tif": "gtc",
             "reduce_only": True,
             "text": "SL-SMC",
-            "trigger": {
+            "stop": {
                 "price": sl,
-                "rule": 2  # mark price
+                "type": "mark_price"
             }
         }
         futures_api.create_futures_order(sl_order)
@@ -135,3 +136,32 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         print(msg)
         send_discord_debug(msg, "gateio")
         return False
+        
+def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
+    try:
+        size = futures_api.get_futures_position(symbol).size
+        if float(size) == 0:
+            return None  # 포지션 없으면 무시
+
+        sl_order = {
+            "contract": symbol,
+            "size": float(size) if direction == 'long' else -float(size),
+            "price": 0,
+            "tif": "gtc",
+            "reduce_only": True,
+            "text": "SL-UPDATE",
+            "stop": {
+                "price": stop_price,
+                "type": "mark_price"
+            }
+        }
+        futures_api.create_futures_order(sl_order)
+        msg = f"[SL 갱신] {symbol} STOP SL 재설정 완료 → {stop_price}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
+        return True
+    except Exception as e:
+        msg = f"[ERROR] SL 갱신 실패: {symbol} → {e}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
+        return None
