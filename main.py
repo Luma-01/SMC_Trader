@@ -14,6 +14,8 @@ from core.iof import is_iof_entry
 from core.position import PositionManager
 from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
 from exchange.binance_api import get_max_leverage, get_available_balance, get_quantity_precision
+from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
+from exchange.binance_api import place_order_with_tp_sl as binance_order, get_open_position as binance_pos, set_leverage
 from exchange.gate_sdk import place_order_with_tp_sl as gate_order, get_open_position as gate_pos
 from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
 from notify.discord import send_discord_debug, send_discord_message
@@ -144,7 +146,7 @@ async def strategy_loop():
                         continue
 
                     lev = SYMBOLS[symbol]['leverage']
-                    binance_order(symbol, 'buy' if direction == 'long' else 'sell', bnb_qty)
+                    binance_order_with_tp_sl(symbol, 'buy' if direction == 'long' else 'sell', bnb_qty, tp, sl)
                     gate_order(gate_sym, 'buy' if direction == 'long' else 'sell', gate_qty, tp, sl, lev)
 
                     # 포지션 등록
