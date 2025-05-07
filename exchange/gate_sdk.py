@@ -4,6 +4,7 @@ import os
 from gate_api import ApiClient, Configuration, FuturesApi
 from dotenv import load_dotenv
 from notify.discord import send_discord_debug, send_discord_message
+import math
 
 load_dotenv()
 
@@ -58,3 +59,27 @@ def get_open_position(symbol: str):
         send_discord_debug(msg, "gateio")
 
     return None
+    
+# 사용 가능 잔고 조회 (USDT 기준)
+def get_available_balance() -> float:
+    try:
+        accounts = futures_api.list_futures_accounts()
+        for acc in accounts:
+            if acc.currency == 'USDT':
+                return float(acc.available)
+    except Exception as e:
+        print(f"[GATE] 잔고 조회 실패: {e}")
+        send_discord_debug(f"[GATE] 잔고 조회 실패 → {e}", "gateio")
+    return 0.0
+
+# 수량 소수점 자리수 계산
+def get_quantity_precision(symbol: str) -> int:
+    try:
+        contract = futures_api.get_futures_contract(symbol)
+        step = float(contract.order_size_min)
+        precision = abs(int(round(-1 * math.log10(step))))
+        return precision
+    except Exception as e:
+        print(f"[GATE] 수량 precision 조회 실패: {e}")
+        send_discord_debug(f"[GATE] 수량 precision 조회 실패 → {e}", "gateio")
+    return 3
