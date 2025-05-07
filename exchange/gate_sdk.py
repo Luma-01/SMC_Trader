@@ -1,6 +1,7 @@
 # exchange/gate_sdk.py
 
 import os
+from decimal import Decimal
 from gate_api import ApiClient, Configuration, FuturesApi
 from dotenv import load_dotenv
 from notify.discord import send_discord_debug, send_discord_message
@@ -84,7 +85,7 @@ def get_quantity_precision(symbol: str) -> int:
         send_discord_debug(f"[GATE] 수량 precision 조회 실패 → {e}", "gateio")
     return 3
     
-# ✅ TP/SL 포함 주문
+# TP/SL 포함 주문
 def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: float, leverage: int = 20):
     try:
         # 진입
@@ -139,24 +140,24 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         
 def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
     try:
-        size = futures_api.get_futures_position(symbol).size
-        if float(size) == 0:
-            return None  # 포지션 없으면 무시
+        pos = futures_api.get_futures_position(symbol)
+        size = float(pos.size)
+        if size == 0:
+            return None
 
         sl_order = {
             "contract": symbol,
-            "size": float(size) if direction == 'long' else -float(size),
-            "price": 0,
+            "size": size if direction == 'long' else -size,
             "tif": "gtc",
             "reduce_only": True,
             "text": "SL-UPDATE",
-            "stop": {
+            "trigger": {
                 "price": stop_price,
-                "type": "mark_price"
+                "rule": 2  # mark price 기준 트리거
             }
         }
         futures_api.create_futures_order(sl_order)
-        msg = f"[SL 갱신] {symbol} STOP SL 재설정 완료 → {stop_price}"
+        msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {stop_price}"
         print(msg)
         send_discord_debug(msg, "gateio")
         return True
@@ -165,3 +166,36 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         print(msg)
         send_discord_debug(msg, "gateio")
         return None
+    
+def close_position(symbol: str):
+    try:
+        pos = futures_api.get_futures_position(symbol)
+        size = float(pos.size)
+        if size == 0:
+            return False
+
+        close_order = {
+            "contract": symbol,
+            "size": -size,
+            "tif": "ioc",
+            "reduce_only": True,
+            "text": "FORCE-CLOSE"
+        }
+        futures_api.create_futures_order(close_order)
+        print(f"[GATE] 포지션 강제 종료 완료 | {symbol}")
+        send_discord_debug(f"[GATE] 포지션 강제 종료 완료 | {symbol}", "gateio")
+        return True
+    except Exception as e:
+        msg = f"[GATE] ❌ 포지션 종료 실패 | {symbol} → {e}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
+        return False
+
+def get_tick_size(symbol: str) -> Decimal:
+    try:
+        contract = futures_api.get_futures_contract(symbol)
+        return Decimal(str(contract.order_price_round))
+    except Exception as e:
+        print(f"[GATE] tick_size 조회 실패: {e}")
+        send_discord_debug(f"[GATE] tick_size 조회 실패 → {e}", "gateio")
+    return Decimal("0.0001")

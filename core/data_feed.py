@@ -91,7 +91,7 @@ async def stream_live_candles():
                         "volume": float(k['v'])
                     }
                     candles[symbol][tf].append(candle)
-                    send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
+                    #send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
 
         except Exception as e:
             msg = f"❌ [BINANCE] WebSocket 연결 실패: {e}"

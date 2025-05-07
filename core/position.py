@@ -3,7 +3,9 @@
 from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
 from notify.discord import send_discord_message, send_discord_debug
-from exchange.binance_api import place_stop_loss_order, cancel_order
+from exchange.router import update_stop_loss
+from exchange.router import cancel_order
+from exchange.router import update_stop_loss
 
 class PositionManager:
     def __init__(self):
@@ -25,9 +27,10 @@ class PositionManager:
         }
 
         # 진입 시 SL 주문 생성
-        order_id = place_stop_loss_order(symbol, direction, sl)
-        if order_id:
-            self.positions[symbol]['sl_order_id'] = order_id
+        sl_result = update_stop_loss(symbol, direction, sl)
+        if isinstance(sl_result, int):  # Binance 전용 ID
+            self.positions[symbol]['sl_order_id'] = sl_result
+            self.positions[symbol]['sl'] = sl
             print(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}")
             send_discord_debug(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}", "aggregated")
 
@@ -62,7 +65,7 @@ class PositionManager:
                     print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
                     send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
 
-                # 보호선 도달 여부 먼저 체크 (주문 전에 종료)
+                # 보호선 도달 여부 먼저 체크
                 if ((direction == 'long' and current_price <= protective) or
                     (direction == 'short' and current_price >= protective)):
                     print(f"[MSS EARLY STOP] {symbol} 보호선 도달 → SL 갱신 전 종료")
@@ -70,15 +73,22 @@ class PositionManager:
                     self.close(symbol)
                     return
 
-                # 새 SL 주문 설정
-                sl_order_id = place_stop_loss_order(symbol, direction, protective)
-                if sl_order_id:
-                    pos["sl_order_id"] = sl_order_id
-                    print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})")
-                    send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f} (ID: {sl_order_id})", "aggregated")
+                if self.should_update_sl(symbol, protective):
+                    sl_result = update_stop_loss(symbol, direction, protective)
+                    if isinstance(sl_result, int):  # Binance 전용 SL ID
+                        id_info = f" (ID: {sl_result})"
+                        pos["sl_order_id"] = sl_result
+                        pos["sl"] = protective
+                        print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}")
+                        send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}", "aggregated")
+                    else:
+                        print(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}")
+                        send_discord_debug(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}", "aggregated")
+                        return
+
                 else:
-                    print(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}")
-                    send_discord_debug(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}", "aggregated")
+                    print(f"[SL] 보호선 SL 갱신 생략: 기존 SL보다 보수적이지 않음 | {symbol}")
+                    send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL보다 보수적이지 않음 | {symbol}", "aggregated")
 
                 # MSS 먼저 발생했을 경우 → 즉시 전체 종료
                 if ((direction == 'long' and current_price <= protective) or
@@ -147,4 +157,13 @@ class PositionManager:
             "protective_level": None,
             "mss_triggered": False
         }
-
+    
+    def should_update_sl(self, symbol: str, new_sl: float) -> bool:
+        if symbol not in self.positions:
+            return False
+        current_sl = self.positions[symbol]['sl']
+        direction = self.positions[symbol]['direction']
+        if direction == 'long':
+            return new_sl > current_sl
+        else:
+            return new_sl < current_sl

@@ -16,6 +16,7 @@ from exchange.binance_api import place_order as binance_order, get_open_position
 from exchange.binance_api import get_max_leverage, get_available_balance, get_quantity_precision
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
 from exchange.binance_api import place_order_with_tp_sl as binance_order, get_open_position as binance_pos, set_leverage
+from exchange.binance_api import get_tick_size
 from exchange.gate_sdk import place_order_with_tp_sl as gate_order, get_open_position as gate_pos
 from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
 from notify.discord import send_discord_debug, send_discord_message
@@ -69,10 +70,12 @@ async def strategy_loop():
     print("📈 전략 루프 시작됨 (5초 간격)")
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
-        for symbol in SYMBOLS:
+        for symbol, meta in SYMBOLS.items():
             try:
-                df_htf = candles.get(symbol, {}).get('1h', None)
-                df_ltf = candles.get(symbol, {}).get('5m', None)
+                htf_tf = meta.get("htf", "1h")
+                ltf_tf = meta.get("ltf", "5m")
+                df_htf = candles.get(symbol, {}).get(htf_tf, None)
+                df_ltf = candles.get(symbol, {}).get(ltf_tf, None)
 
                 if df_htf is None or df_ltf is None:
                     print(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)")
@@ -88,32 +91,49 @@ async def strategy_loop():
 
                 htf = pd.DataFrame(df_htf)
                 htf.attrs["symbol"] = symbol
+                htf.attrs["tf"] = htf_tf
                 ltf = pd.DataFrame(df_ltf)
                 ltf.attrs["symbol"] = symbol
-
-                #print(f"[DEBUG] {symbol} HTF 마지막 5개 캔들:\n{htf.tail(5)}")
-
                 htf_struct = detect_structure(htf)
+                #print(f"[DEBUG] {symbol} 구조 태그 있는 HTF:\n{htf_struct[['time', 'structure']].tail(10)}")
+
+                if htf_struct is None or not isinstance(htf_struct, pd.DataFrame):
+                    print(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)")
+                    send_discord_debug(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)", "aggregated")
+                    continue
                 if 'structure' not in htf_struct.columns:
                     print(f"[{symbol}] ❌ 구조 컬럼 없음")
                     send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
                     continue
+                if htf_struct['structure'].dropna().empty:
+                    print(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)")
+                    send_discord_debug(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)", "aggregated")
+                    continue
+
+                # 마지막 구조 로그 출력
+                last_struct = htf_struct['structure'].dropna().iloc[-1]
+                print(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}")
+                #send_discord_debug(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}", "aggregated")
+
+                # 최근 구조 출력
+                #recent_structure = htf_struct['structure'].dropna().iloc[-1] if not htf_struct['structure'].dropna().empty else None
+                #print(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {recent_structure}")
+                #send_discord_debug(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {recent_structure}", "aggregated")
 
                 try:
-                    result = is_iof_entry(htf_struct, ltf)
-                    if not isinstance(result, tuple) or len(result) != 2:
-                        print(f"[{symbol}] ❌ IOF 결과 형식 오류: {result}")
-                        send_discord_debug(f"[{symbol}] ❌ IOF 결과 형식 오류: {result}", "aggregated")
-                        continue
-                    signal, direction = result
+                    tick_size = get_tick_size(symbol)
+                    signal, direction = is_iof_entry(htf_struct, ltf, tick_size)
                 except Exception as e:
                     print(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}")
                     send_discord_debug(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}", "aggregated")
                     continue
 
-                if not signal or not direction:
-                    print(f"[{symbol}] 🚫 IOF 조건 불충족 → signal={signal}, direction={direction}")
-                    # send_discord_debug(f"[{symbol}] 🚫 IOF 조건 불충족 → signal={signal}, direction={direction}", "aggregated")
+                if direction is None:
+                    print(f"[{symbol}] 🚫 IOF 조건 불충족 → 구조 신호 없음 (direction=None)")
+                    send_discord_debug(f"[{symbol}] ❌ 구조 판단 실패 (direction=None)", "aggregated")
+                    continue
+                if not signal:
+                    print(f"[{symbol}] 🚫 IOF 조건 불충족 → 진입 영역 외 (FVG/OB/BB 미충족)")
                     continue
 
                 if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
@@ -135,7 +155,6 @@ async def strategy_loop():
                         continue
 
                     # Gate 잔고 기반 진입 수량 계산
-                    from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
                     gate_sym = symbol.replace("USDT", "_USDT")
                     gate_balance_usdt = gate_balance()
                     gate_risk_usdt = gate_balance_usdt * 0.3

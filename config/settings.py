@@ -71,7 +71,10 @@ def fetch_symbol_info(symbols):
             "base": s['baseAsset'],
             "minQty": min_qty,
             "leverage": applied_lev,
-            "maxLeverage": max_lev
+            "maxLeverage": max_lev,
+            # 거래소 구분 후 타임프레임 설정
+            "htf": "15m" if "_USDT" in symbol else "1h",
+            "ltf": "1m" if "_USDT" in symbol else "5m"
         }
 
     return result

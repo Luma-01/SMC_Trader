@@ -1,6 +1,8 @@
 # exchange/binance_api.py
 
 import os
+import math
+from decimal import Decimal
 from typing import Optional
 from dotenv import load_dotenv
 from notify.discord import send_discord_debug, send_discord_message
@@ -186,7 +188,7 @@ def get_available_balance() -> float:
     return 0.0
 
 
-# ✅ 심볼별 수량 소수점 자리수 조회
+# 심볼별 수량 소수점 자리수 조회
 def get_quantity_precision(symbol: str) -> int:
     try:
         exchange_info = client.futures_exchange_info()
@@ -201,3 +203,16 @@ def get_quantity_precision(symbol: str) -> int:
         print(f"[BINANCE] 수량 자리수 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] 수량 자리수 조회 실패 → {e}", "binance")
     return 3  # 기본값
+
+def get_tick_size(symbol: str) -> Decimal:
+    try:
+        exchange_info = client.futures_exchange_info()
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol.upper():
+                for f in s['filters']:
+                    if f['filterType'] == 'PRICE_FILTER':
+                        return Decimal(f['tickSize'])
+    except Exception as e:
+        print(f"[BINANCE] tick_size 조회 실패: {e}")
+        send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
+    return Decimal("0.0001")
