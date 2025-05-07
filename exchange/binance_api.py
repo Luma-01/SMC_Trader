@@ -1,16 +1,15 @@
 # exchange/binance_api.py
 
 import os
-from binance.client import Client
+from typing import Optional
 from dotenv import load_dotenv
 from notify.discord import send_discord_debug, send_discord_message
+from binance.client import Client
 from binance.enums import (
     SIDE_BUY, SIDE_SELL,
     ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT, TIME_IN_FORCE_GTC
 )
 from binance.exceptions import BinanceAPIException
-from typing import Optional
-
 
 load_dotenv()
 
