@@ -121,18 +121,30 @@ async def strategy_loop():
                 if not pm.has_position(symbol):
                     entry = ltf['close'].dropna().iloc[-1]
                     sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
-                    balance = get_available_balance()
-                    lev = SYMBOLS[symbol]['leverage']
-                    risk_usdt = balance * 0.3
-                    qty_precision = get_quantity_precision(symbol)
-                    qty = round(risk_usdt / entry, qty_precision)
-                    if qty <= 0:
-                        print(f"[{symbol}] ❌ 진입 실패: 계산된 수량이 0 이하 (balance={balance}, entry={entry}, qty={qty})")
+
+                    # Binance 잔고 기반 진입 수량 계산
+                    bnb_balance = get_available_balance()
+                    bnb_risk_usdt = bnb_balance * 0.3
+                    bnb_qty_precision = get_quantity_precision(symbol)
+                    bnb_qty = round(bnb_risk_usdt / entry, bnb_qty_precision)
+                    if bnb_qty <= 0:
+                        print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
                         continue
 
-                    # 진입
-                    binance_order(symbol, 'buy' if direction == 'long' else 'sell', qty)
-                    gate_order(symbol.replace("USDT", "_USDT"), 'buy' if direction == 'long' else 'sell', qty, lev)
+                    # Gate 잔고 기반 진입 수량 계산
+                    from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
+                    gate_sym = symbol.replace("USDT", "_USDT")
+                    gate_balance_usdt = gate_balance()
+                    gate_risk_usdt = gate_balance_usdt * 0.3
+                    gate_qty_precision = gate_precision(gate_sym)
+                    gate_qty = round(gate_risk_usdt / entry, gate_qty_precision)
+                    if gate_qty <= 0:
+                        print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
+                        continue
+
+                    lev = SYMBOLS[symbol]['leverage']
+                    binance_order(symbol, 'buy' if direction == 'long' else 'sell', bnb_qty)
+                    gate_order(gate_sym, 'buy' if direction == 'long' else 'sell', gate_qty, lev)
 
                     # 포지션 등록
                     pm.enter(symbol, direction, entry, sl, tp)
