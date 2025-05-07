@@ -137,7 +137,7 @@ def get_open_position(symbol: str):
         raise e
     return None
 
-def place_stop_loss_order(symbol: str, direction: str, stop_price: float):
+def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
     try:
         side = SIDE_SELL if direction == 'long' else SIDE_BUY
         position_side = 'LONG' if direction == 'long' else 'SHORT'
@@ -150,14 +150,14 @@ def place_stop_loss_order(symbol: str, direction: str, stop_price: float):
             timeInForce=TIME_IN_FORCE_GTC,
             positionSide=position_side
         )
-        msg = f"[SL] {symbol} {side} STOP_MARKET @ {stop_price}"
+        msg = f"[SL 갱신] {symbol} STOP_MARKET SL 재설정 완료 → {stop_price}"
         print(msg)
         send_discord_debug(msg, "binance")
         return order['orderId']
-    
     except Exception as e:
-        print(f"[ERROR] SL 주문 실패: {symbol} - {e}")
-        send_discord_debug(f"[BINANCE] SL 주문 실패: {symbol} → {e}", "binance")
+        msg = f"[ERROR] SL 갱신 실패: {symbol} → {e}"
+        print(msg)
+        send_discord_debug(msg, "binance")
         return None
     
 def cancel_order(symbol: str, order_id: int):
