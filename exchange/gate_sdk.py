@@ -100,33 +100,28 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         }
         futures_api.create_futures_order(entry_order)
 
-        # TP (절반 익절)
+        # TP
         tp_order = {
             "contract": symbol,
             "size": round(size / 2, 3) if side == "buy" else round(-size / 2, 3),
             "price": tp,
             "tif": "gtc",
             "reduce_only": True,
-            "auto_size": "",
-            "text": "TP-SMC",
-            "leverage": leverage
+            "text": "TP-SMC"
         }
         futures_api.create_futures_order(tp_order)
 
-        # SL (전체 청산)
+        # SL (트리거 주문)
         sl_order = {
             "contract": symbol,
             "size": size if side == "buy" else -size,
-            "price": 0,
             "tif": "gtc",
-            "stop": {
-                "price": sl,
-                "type": "mark_price"
-            },
             "reduce_only": True,
-            "auto_size": "",
             "text": "SL-SMC",
-            "leverage": leverage
+            "trigger": {
+                "price": sl,
+                "rule": 2  # mark price
+            }
         }
         futures_api.create_futures_order(sl_order)
 
