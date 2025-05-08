@@ -62,22 +62,22 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, tick_size: Decimal)
         return False, direction
     current_price = Decimal(str(ltf_df['close'].dropna().iloc[-1])).quantize(tick_size)
 
+    buffer = tick_size * 2  # ✅ 진입 완화용 버퍼 설정
 
     # 3. FVG 진입 여부
     fvg_zones = detect_fvg(ltf_df)
     if fvg_zones:
-        for fvg in reversed(fvg_zones):
+        for fvg in reversed(fvg_zones[-3:]):
+            low = Decimal(str(fvg['low'])).quantize(tick_size)
+            high = Decimal(str(fvg['high'])).quantize(tick_size)
+            print(f"[DEBUG] FVG {fvg['type']} ZONE: {low} ~ {high}, CURRENT: {current_price}")
             if direction == 'long' and fvg['type'] == 'bullish':
-                low = Decimal(str(fvg['low'])).quantize(tick_size)
-                high = Decimal(str(fvg['high'])).quantize(tick_size)
-                if low <= current_price <= high:
+                if (low - buffer) <= current_price <= (high + buffer):
                     print(f"[IOF] ✅ LONG 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}")
                     send_discord_debug(f"[IOF] ✅ LONG 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}", "aggregated")
                     return True, direction
             elif direction == 'short' and fvg['type'] == 'bearish':
-                low = Decimal(str(fvg['low'])).quantize(tick_size)
-                high = Decimal(str(fvg['high'])).quantize(tick_size)
-                if low <= current_price <= high:
+                if (low - buffer) <= current_price <= (high + buffer):
                     print(f"[IOF] ✅ SHORT 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}")
                     send_discord_debug(f"[IOF] ✅ SHORT 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}", "aggregated")                 
                     return True, direction
@@ -89,11 +89,12 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, tick_size: Decimal)
     # 4. OB 진입 여부
     ob_zones = detect_ob(ltf_df)
     if ob_zones:
-        for ob in reversed(ob_zones):
+        for ob in reversed(ob_zones[-3:]):
             if ob['type'] == direction:
                 low = Decimal(str(ob['low'])).quantize(tick_size)
                 high = Decimal(str(ob['high'])).quantize(tick_size)
-                if low <= current_price <= high:
+                print(f"[DEBUG] OB {ob['type']} ZONE: {low} ~ {high}, CURRENT: {current_price}")
+                if (low - buffer) <= current_price <= (high + buffer):
                     print(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (OB 기반) | OB 범위: {ob['low']} ~ {ob['high']} | 현재가: {current_price}")
                     send_discord_debug(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (OB 기반) | OB 범위: {ob['low']} ~ {ob['high']} | 현재가: {current_price}", "aggregated")
                     return True, direction
@@ -105,11 +106,12 @@ def is_iof_entry(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, tick_size: Decimal)
     # 5. BB 진입 여부
     bb_zones = detect_bb(ltf_df, ob_zones)
     if bb_zones:
-        for bb in reversed(bb_zones):
+        for bb in reversed(bb_zones[-3:]):
             if bb['type'] == direction:
                 low = Decimal(str(bb['low'])).quantize(tick_size)
                 high = Decimal(str(bb['high'])).quantize(tick_size)
-                if low <= current_price <= high:
+                print(f"[DEBUG] BB {bb['type']} ZONE: {low} ~ {high}, CURRENT: {current_price}")
+                if (low - buffer) <= current_price <= (high + buffer):
                     print(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (BB 기반) | BB 범위: {bb['low']} ~ {bb['high']} | 현재가: {current_price}")
                     send_discord_debug(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (BB 기반) | BB 범위: {bb['low']} ~ {bb['high']} | 현재가: {current_price}", "aggregated")
                     return True, direction

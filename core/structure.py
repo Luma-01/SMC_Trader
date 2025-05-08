@@ -3,7 +3,7 @@
 import pandas as pd
 from notify.discord import send_discord_debug
 
-last_sent_structure: dict[tuple[str, str], str] = {}  # (symbol, tf)
+last_sent_structure: dict[str, str] = {}
 
 def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -15,8 +15,7 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     tf = df.attrs.get("tf", "?")
-    key = (symbol, tf)
-    last_type = last_sent_structure.get(key)
+    last_type = last_sent_structure.get(symbol)
 
     if len(df) < 3:
         print("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가")
@@ -25,7 +24,7 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
         return df
     
     structure_type = None
-    for i in range(len(df) - 10, len(df)):  # 최근 10개 캔들 분석
+    for i in range(len(df) - 30, len(df)):  # 최근 30개 캔들 분석
         try:
             if df['high'].iloc[i] > df['high'].iloc[i - 1] and df['low'].iloc[i] > df['low'].iloc[i - 1]:
                 df.at[df.index[i], 'structure'] = 'BOS_up'
@@ -47,10 +46,9 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
         if structure_type and i == len(df) - 1:
             df.at[df.index[i], 'structure'] = structure_type
             if structure_type != last_type:
-                msg = f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}"
-                print(msg)
-                send_discord_debug(msg, "aggregated")
-                last_sent_structure[key] = structure_type
+                print(f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}")
+                send_discord_debug(f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}", "aggregated")
+                last_sent_structure[symbol] = structure_type
                 last_type = structure_type
 
     return df

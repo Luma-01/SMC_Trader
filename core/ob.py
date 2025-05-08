@@ -11,28 +11,34 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
     """
     df = df.copy()
     ob_zones = []
-    for i in range(2, len(df)):
+    max_displacement_candles = 3
+    for i in range(2, len(df) - max_displacement_candles):
         c1 = df.iloc[i - 2]
         c2 = df.iloc[i - 1]
-        c3 = df.iloc[i]
+        for j in range(1, max_displacement_candles + 1):
+            if i + j >= len(df):
+                break
+            c_next = df.iloc[i + j]
 
-        # SMC식 기준 OB 생성: 임펄스 전 마지막 캔들
-        # Bearish OB: 상승 후 하락 displacement
-        if c1['high'] < c2['high'] and c2['high'] > c3['high'] and c3['close'] < c3['open']:
-            ob_zones.append({
-                "type": "bearish",
-                "high": max(c2['open'], c2['close']),
-                "low": min(c2['open'], c2['close']),
-                "time": c2['time']
-            })
-        # Bullish OB: 하락 후 상승 displacement
-        elif c1['low'] > c2['low'] and c2['low'] < c3['low'] and c3['close'] > c3['open']:
-            ob_zones.append({
-                "type": "bullish",
-                "high": max(c2['open'], c2['close']),
-                "low": min(c2['open'], c2['close']),
-                "time": c2['time']
-            })
+            # Bearish OB: 상승 후 하락 displacement
+            if c1['high'] < c2['high'] and c2['high'] > c_next['high'] and c_next['close'] < c_next['open']:
+                ob_zones.append({
+                    "type": "bearish",
+                    "high": max(c2['open'], c2['close']),
+                    "low": min(c2['open'], c2['close']),
+                    "time": c2['time']
+                })
+                break
+
+            # Bullish OB: 하락 후 상승 displacement
+            if c1['low'] > c2['low'] and c2['low'] < c_next['low'] and c_next['close'] > c_next['open']:
+                ob_zones.append({
+                    "type": "bullish",
+                    "high": max(c2['open'], c2['close']),
+                    "low": min(c2['open'], c2['close']),
+                    "time": c2['time']
+                })
+                break
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     if ob_zones:
