@@ -3,7 +3,7 @@
 import pandas as pd
 from notify.discord import send_discord_debug
 
-last_sent_structure: dict[str, str] = {}
+last_sent_structure: dict[tuple[str, str], str] = {}  # (symbol, tf)
 
 def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -15,7 +15,8 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     tf = df.attrs.get("tf", "?")
-    last_type = last_sent_structure.get(symbol)
+    key = (symbol, tf)
+    last_type = last_sent_structure.get(key)
 
     if len(df) < 3:
         print("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가")
@@ -46,9 +47,10 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
         if structure_type and i == len(df) - 1:
             df.at[df.index[i], 'structure'] = structure_type
             if structure_type != last_type:
-                print(f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}")
-                send_discord_debug(f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}", "aggregated")
-                last_sent_structure[symbol] = structure_type
+                msg = f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}"
+                print(msg)
+                send_discord_debug(msg, "aggregated")
+                last_sent_structure[key] = structure_type
                 last_type = structure_type
 
     return df
