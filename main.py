@@ -91,6 +91,7 @@ async def strategy_loop():
 
                 htf = pd.DataFrame(df_htf)
                 htf.attrs["symbol"] = symbol
+                htf.attrs["tf"] = htf_tf  # ✅ 구조 식별용 타임프레임 저장
                 htf.attrs["tf"] = htf_tf
                 ltf = pd.DataFrame(df_ltf)
                 ltf.attrs["symbol"] = symbol
