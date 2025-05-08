@@ -60,7 +60,10 @@ def initialize_historical():
 # 2. 실시간 WebSocket 연결
 async def stream_live_candles():
     stream_pairs = [
-        f"{symbol.lower()}@kline_{tf}" for symbol in SYMBOLS for tf in TIMEFRAMES
+        f"{symbol.lower()}@kline_{tf}"
+        for symbol in SYMBOLS
+        if not symbol.endswith("_USDT")  # Binance 심볼만
+        for tf in TIMEFRAMES
     ]
     url = BINANCE_WS_URL + "/".join(stream_pairs)
 
