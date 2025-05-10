@@ -3,7 +3,7 @@
 import pandas as pd
 from notify.discord import send_discord_debug
 
-last_sent_structure: dict[str, str] = {}
+last_sent_structure: dict[tuple[str, str], tuple[str, pd.Timestamp]] = {}
 
 def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -15,7 +15,7 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     tf = df.attrs.get("tf", "?")
-    last_type = last_sent_structure.get(symbol)
+    last_type, last_time = last_sent_structure.get((symbol, tf), (None, None))
 
     if len(df) < 3:
         print("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가")
@@ -23,32 +23,40 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
         df['structure'] = None
         return df
     
+    #print(f"[STRUCTURE DEBUG] {symbol} ({tf}) 구조 분석 시작 → 캔들 수: {len(df)}")
+    structure_window_start = len(df) - 30
+
     structure_type = None
-    for i in range(len(df) - 30, len(df)):  # 최근 30개 캔들 분석
+    structure_time = None
+    for i in range(structure_window_start, len(df)):
         try:
+            stype = None
             if df['high'].iloc[i] > df['high'].iloc[i - 1] and df['low'].iloc[i] > df['low'].iloc[i - 1]:
-                df.at[df.index[i], 'structure'] = 'BOS_up'
-                structure_type = 'BOS_up'
+                stype = 'BOS_up'
             elif df['low'].iloc[i] < df['low'].iloc[i - 1] and df['high'].iloc[i] < df['high'].iloc[i - 1]:
-                df.at[df.index[i], 'structure'] = 'BOS_down'
-                structure_type = 'BOS_down'
+                stype = 'BOS_down'
             elif df['low'].iloc[i] > df['low'].iloc[i - 1] and df['high'].iloc[i - 2] > df['high'].iloc[i - 1]:
-                df.at[df.index[i], 'structure'] = 'CHoCH_up'
-                structure_type = 'CHoCH_up'
+                stype = 'CHoCH_up'
             elif df['high'].iloc[i] < df['high'].iloc[i - 1] and df['low'].iloc[i - 2] < df['low'].iloc[i - 1]:
-                df.at[df.index[i], 'structure'] = 'CHoCH_down'
-                structure_type = 'CHoCH_down'
+                stype = 'CHoCH_down'
+
+            if stype:
+                df.at[df.index[i], 'structure'] = stype
+                structure_type = stype
+                structure_time = df['time'].iloc[i]
         except Exception as e:
             print(f"[STRUCTURE] 예외 발생 (index={i}): {e}")
             continue
 
-        # 마지막 캔들에서 구조 변화가 감지된 경우에만 전송
-        if structure_type and i == len(df) - 1:
-            df.at[df.index[i], 'structure'] = structure_type
-            if structure_type != last_type:
-                print(f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}")
-                send_discord_debug(f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {df['time'].iloc[i]}", "aggregated")
-                last_sent_structure[symbol] = structure_type
-                last_type = structure_type
+    # 마지막 구조만 알림
+    if structure_type and ((structure_type, structure_time) != last_sent_structure.get((symbol, tf))):
+        log_msg = f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {structure_time}"
+        print(log_msg)
+        send_discord_debug(log_msg, "aggregated")
+        last_sent_structure[(symbol, tf)] = (structure_type, structure_time)
+
+
+    #recent_structs = df['structure'].dropna().tail(3).tolist()
+    #print(f"[STRUCTURE DEBUG] {symbol} ({tf}) → 최근 구조 3개: {recent_structs}")
 
     return df

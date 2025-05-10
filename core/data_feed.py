@@ -60,8 +60,7 @@ def initialize_historical():
 # 2. 실시간 WebSocket 연결
 async def stream_live_candles():
     stream_pairs = [
-        f"{symbol.lower()}@kline_{tf}" for symbol in SYMBOLS for tf in TIMEFRAMES
-    ]
+        f"{symbol.replace('_', '').lower()}@kline_{tf}" for symbol in SYMBOLS for tf in TIMEFRAMES]
     url = BINANCE_WS_URL + "/".join(stream_pairs)
 
     async with aiohttp.ClientSession() as session:
@@ -76,8 +75,9 @@ async def stream_live_candles():
                     symbol_tf = stream.split('@kline_')
                     if len(symbol_tf) != 2:
                         continue
-                    symbol = symbol_tf[0].upper()
+                    stream_symbol = symbol_tf[0].upper()
                     tf = symbol_tf[1]
+                    symbol = stream_symbol.replace("USDT", "_USDT")
 
                     k = data['k']
                     if not k['x']:  # 캔들 미완성 시 무시
@@ -90,7 +90,8 @@ async def stream_live_candles():
                         "close": float(k['c']),
                         "volume": float(k['v'])
                     }
-                    candles[symbol][tf].append(candle)
+                    if symbol in SYMBOLS:
+                        candles[symbol][tf].append(candle)
                     #send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
 
         except Exception as e:

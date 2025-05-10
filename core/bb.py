@@ -53,5 +53,6 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
                     break
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
-    print(f"[BB] {symbol} - BB {len(bb_zones)}개 감지됨")
+    tf = df.attrs.get("tf", "?")
+    print(f"[BB][{tf}] {symbol} - BB {len(bb_zones)}개 감지됨")
     return bb_zones

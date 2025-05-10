@@ -40,7 +40,8 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
             })
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
+    tf = df.attrs.get("tf", "?")
     count = len(fvg_zones)
-    print(f"📉 [FVG] {symbol} - FVG {count}개 감지됨")
+    print(f"📉 [FVG][{tf}] {symbol} - FVG {count}개 감지됨")
     #send_discord_debug(f"📉 [FVG] {symbol} - FVG {count}개 감지됨", "aggregated")
     return fvg_zones

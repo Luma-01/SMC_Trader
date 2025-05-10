@@ -15,7 +15,6 @@ from core.position import PositionManager
 from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
 from exchange.binance_api import get_max_leverage, get_available_balance, get_quantity_precision
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
-from exchange.binance_api import place_order_with_tp_sl as binance_order, get_open_position as binance_pos, set_leverage
 from exchange.binance_api import get_tick_size
 from exchange.gate_sdk import place_order_with_tp_sl as gate_order, get_open_position as gate_pos
 from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
@@ -71,114 +70,121 @@ async def strategy_loop():
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
         for symbol, meta in SYMBOLS.items():
-            try:
-                htf_tf = meta.get("htf", "1h")
-                ltf_tf = meta.get("ltf", "5m")
-                df_htf = candles.get(symbol, {}).get(htf_tf, None)
-                df_ltf = candles.get(symbol, {}).get(ltf_tf, None)
-
-                if df_htf is None or df_ltf is None:
-                    print(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)")
-                    send_discord_debug(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)", "aggregated")
-                    continue
-
-                if not df_htf or not df_ltf:
-                    print(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)")
-                    send_discord_debug(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)", "aggregated")
-                    continue
-                if len(df_htf) < 30 or len(df_ltf) < 30:
-                    continue
-
-                htf = pd.DataFrame(df_htf)
-                htf.attrs["symbol"] = symbol
-                htf.attrs["tf"] = htf_tf
-                ltf = pd.DataFrame(df_ltf)
-                ltf.attrs["symbol"] = symbol
-                htf_struct = detect_structure(htf)
-                #print(f"[DEBUG] {symbol} 구조 태그 있는 HTF:\n{htf_struct[['time', 'structure']].tail(10)}")
-
-                if htf_struct is None or not isinstance(htf_struct, pd.DataFrame):
-                    print(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)")
-                    send_discord_debug(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)", "aggregated")
-                    continue
-                if 'structure' not in htf_struct.columns:
-                    print(f"[{symbol}] ❌ 구조 컬럼 없음")
-                    send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
-                    continue
-                if htf_struct['structure'].dropna().empty:
-                    print(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)")
-                    send_discord_debug(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)", "aggregated")
-                    continue
-
-                # 마지막 구조 로그 출력
-                last_struct = htf_struct['structure'].dropna().iloc[-1]
-                print(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}")
-                #send_discord_debug(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}", "aggregated")
-
-                # 최근 구조 출력
-                #recent_structure = htf_struct['structure'].dropna().iloc[-1] if not htf_struct['structure'].dropna().empty else None
-                #print(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {recent_structure}")
-                #send_discord_debug(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {recent_structure}", "aggregated")
-
+            for htf_tf, ltf_tf in [("1h", "5m"), ("15m", "1m")]:
                 try:
-                    tick_size = get_tick_size(symbol)
-                    signal, direction = is_iof_entry(htf_struct, ltf, tick_size)
+                    df_htf = candles.get(symbol, {}).get(htf_tf, None)
+                    df_ltf = candles.get(symbol, {}).get(ltf_tf, None)
+
+                    if df_htf is None or df_ltf is None:
+                        print(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)")
+                        send_discord_debug(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)", "aggregated")
+                        continue
+
+                    if not df_htf or not df_ltf:
+                        print(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)")
+                        send_discord_debug(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)", "aggregated")
+                        continue
+                    if len(df_htf) < 30 or len(df_ltf) < 30:
+                        continue
+                    
+                    htf = pd.DataFrame(df_htf)
+                    htf.attrs["symbol"] = symbol
+                    htf.attrs["tf"] = htf_tf
+                    ltf = pd.DataFrame(df_ltf)
+                    ltf.attrs["symbol"] = symbol
+
+                    # ✅ 디버깅: 최근 HTF 캔들 확인
+                    #print(f"[DEBUG] {symbol} ({htf_tf}) 최근 HTF 10개:")
+                    #print(htf.tail(10)[['time', 'open', 'high', 'low', 'close']])
+
+                    htf_struct = detect_structure(htf)
+                    #print(f"[DEBUG] {symbol} 구조 태그 있는 HTF:\n{htf_struct[['time', 'structure']].tail(10)}")
+
+                    if htf_struct is None or not isinstance(htf_struct, pd.DataFrame):
+                        print(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)")
+                        send_discord_debug(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)", "aggregated")
+                        continue
+                    if 'structure' not in htf_struct.columns:
+                        print(f"[{symbol}] ❌ 구조 컬럼 없음")
+                        send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
+                        continue
+                    if htf_struct['structure'].dropna().empty:
+                        print(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)")
+                        send_discord_debug(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)", "aggregated")
+                        continue
+                    
+                    # 마지막 구조 로그 출력
+                    #last_struct = htf_struct['structure'].dropna().iloc[-1]
+                    #print(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}")
+                    #send_discord_debug(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}", "aggregated")
+
+                    try:
+                        tick_size = get_tick_size(symbol)
+                        signal, direction = is_iof_entry(htf_struct, ltf, tick_size)
+                    except Exception as e:
+                        print(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}")
+                        send_discord_debug(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}", "aggregated")
+                        continue
+                    
+                    if direction is None:
+                        print(f"[{symbol}] 🚫 IOF 조건 불충족 → 구조 신호 없음 (direction=None)")
+                        send_discord_debug(f"[{symbol}] ❌ 구조 판단 실패 (direction=None)", "aggregated")
+                        continue
+                    if not signal:
+                        print(f"[{symbol}] 🚫 IOF 조건 불충족 → 진입 영역 외 (FVG/OB/BB 미충족)")
+                        continue
+                    
+                    if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
+                        print(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음")
+                        send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
+                        continue
+                    
+                    if not pm.has_position(symbol):
+                        entry = ltf['close'].dropna().iloc[-1]
+                        sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
+
+                        # Binance 잔고 기반 진입 수량 계산
+                        bnb_balance = get_available_balance()
+                        bnb_risk_usdt = bnb_balance * 0.3
+                        bnb_qty_precision = get_quantity_precision(symbol)
+                        bnb_qty = round(bnb_risk_usdt / entry, bnb_qty_precision)
+                        if bnb_qty <= 0:
+                            print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
+                            continue
+                        
+                        # Gate 잔고 기반 진입 수량 계산
+                        gate_sym = symbol
+                        gate_balance_usdt = gate_balance()
+                        gate_risk_usdt = gate_balance_usdt * 0.3
+                        gate_qty_precision = gate_precision(gate_sym)
+                        gate_qty = round(gate_risk_usdt / entry, gate_qty_precision)
+                        if gate_qty <= 0:
+                            print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
+                            continue
+                        
+                        lev = meta['leverage']
+
+                        if (htf_tf, ltf_tf) == ("1h", "5m"):
+                            if bnb_qty <= 0:
+                                print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
+                                continue
+                            binance_order_with_tp_sl(symbol, 'buy' if direction == 'long' else 'sell', bnb_qty, tp, sl)
+                            pm.enter(symbol, direction, entry, sl, tp)
+                        elif (htf_tf, ltf_tf) == ("15m", "1m"):
+                            if gate_qty <= 0:
+                                print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
+                                continue
+                            gate_order(gate_sym, 'buy' if direction == 'long' else 'sell', gate_qty, tp, sl, lev)
+                            pm.enter(symbol, direction, entry, sl, tp)
+
+                    # 실시간 구조 업데이트 + MSS 보호선 체크
+                    current_price = ltf['close'].iloc[-1]
+                    pm.update_price(symbol, current_price, ltf_df=ltf)
+
                 except Exception as e:
-                    print(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}")
-                    send_discord_debug(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}", "aggregated")
-                    continue
-
-                if direction is None:
-                    print(f"[{symbol}] 🚫 IOF 조건 불충족 → 구조 신호 없음 (direction=None)")
-                    send_discord_debug(f"[{symbol}] ❌ 구조 판단 실패 (direction=None)", "aggregated")
-                    continue
-                if not signal:
-                    print(f"[{symbol}] 🚫 IOF 조건 불충족 → 진입 영역 외 (FVG/OB/BB 미충족)")
-                    continue
-
-                if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
-                    print(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음")
-                    send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
-                    continue
-
-                if not pm.has_position(symbol):
-                    entry = ltf['close'].dropna().iloc[-1]
-                    sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
-
-                    # Binance 잔고 기반 진입 수량 계산
-                    bnb_balance = get_available_balance()
-                    bnb_risk_usdt = bnb_balance * 0.3
-                    bnb_qty_precision = get_quantity_precision(symbol)
-                    bnb_qty = round(bnb_risk_usdt / entry, bnb_qty_precision)
-                    if bnb_qty <= 0:
-                        print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
-                        continue
-
-                    # Gate 잔고 기반 진입 수량 계산
-                    gate_sym = symbol.replace("USDT", "_USDT")
-                    gate_balance_usdt = gate_balance()
-                    gate_risk_usdt = gate_balance_usdt * 0.3
-                    gate_qty_precision = gate_precision(gate_sym)
-                    gate_qty = round(gate_risk_usdt / entry, gate_qty_precision)
-                    if gate_qty <= 0:
-                        print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
-                        continue
-
-                    lev = SYMBOLS[symbol]['leverage']
-                    binance_order_with_tp_sl(symbol, 'buy' if direction == 'long' else 'sell', bnb_qty, tp, sl)
-                    gate_order(gate_sym, 'buy' if direction == 'long' else 'sell', gate_qty, tp, sl, lev)
-
-                    # 포지션 등록
-                    pm.enter(symbol, direction, entry, sl, tp)
-
-                # 실시간 구조 업데이트 + MSS 보호선 체크
-                current_price = ltf['close'].iloc[-1]
-                pm.update_price(symbol, current_price, ltf_df=ltf)
-
-            except Exception as e:
-                error_msg = f"❌ [ERROR] {symbol} 전략 오류: {e}"
-                print(error_msg)
-                send_discord_debug(error_msg, "aggregated")
+                    error_msg = f"❌ [ERROR] {symbol} 전략 오류: {e}"
+                    print(error_msg)
+                    send_discord_debug(error_msg, "aggregated")
 
         await asyncio.sleep(5)
 

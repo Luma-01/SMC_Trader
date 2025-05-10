@@ -41,11 +41,12 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
                 break
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
+    tf = df.attrs.get("tf", "?")
     if ob_zones:
         last = ob_zones[-1]
-        msg = f"[OB] {symbol} - {len(ob_zones)}개 감지됨 | 최신: {last['type'].upper()} | {last['low']} ~ {last['high']}"
+        msg = f"[OB][{tf}] {symbol} - {len(ob_zones)}개 감지됨 | 최신: {last['type'].upper()} | {last['low']} ~ {last['high']}"
     else:
-        msg = f"[OB] {symbol} - 감지된 Order Block 없음"
+        msg = f"[OB][{tf}] {symbol} - 감지된 Order Block 없음"
     print(msg)
     #send_discord_debug(msg, "aggregated")
 
