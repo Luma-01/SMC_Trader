@@ -216,3 +216,30 @@ def get_tick_size(symbol: str) -> Decimal:
         print(f"[BINANCE] tick_size 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
     return Decimal("0.0001")
+
+def calculate_quantity(symbol: str, price: float, usdt_balance: float, leverage: int = 10) -> float:
+    try:
+        notional = usdt_balance * leverage
+        raw_qty = notional / price
+
+        # stepSize 가져오기
+        exchange_info = client.futures_exchange_info()
+        step_size = None
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol.upper():
+                for f in s['filters']:
+                    if f['filterType'] == 'LOT_SIZE':
+                        step_size = float(f['stepSize'])
+                        break
+        if step_size is None:
+            print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
+            return 0.0
+
+        precision = abs(int(round(-1 * math.log10(step_size))))
+        steps = math.floor(raw_qty / step_size)
+        qty = round(steps * step_size, precision)
+        return qty
+    except Exception as e:
+        print(f"[BINANCE] ❌ 수량 계산 실패: {e}")
+        return 0.0
+

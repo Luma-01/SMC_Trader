@@ -2,6 +2,7 @@
 import pandas as pd
 from typing import List, Dict
 from notify.discord import send_discord_debug
+from decimal import Decimal, ROUND_DOWN
 
 def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int = 3) -> List[Dict]:
     """
@@ -14,8 +15,8 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
 
     for ob in ob_zones:
         ob_type = ob['type']
-        ob_high = ob['high']
-        ob_low = ob['low']
+        ob_high = Decimal(str(ob['high']))
+        ob_low = Decimal(str(ob['low']))
         ob_time = ob['time']
         df_after = df[df['time'] > ob_time].reset_index(drop=True)
 
@@ -35,19 +36,21 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
         if invalidated and invalid_index is not None:
             for j in range(invalid_index + 1, min(invalid_index + 1 + max_rebound_candles, len(df_after))):
                 rebound = df_after.iloc[j]
+                high = Decimal(str(rebound['high']))
+                low = Decimal(str(rebound['low']))
                 if ob_type == "bullish":
                     bb_zones.append({
                         "type": "bearish",
-                        "high": rebound['high'],
-                        "low": rebound['low'],
+                        "high": float(high),
+                        "low": float(low),
                         "time": rebound['time']
                     })
                     break
                 elif ob_type == "bearish":
                     bb_zones.append({
                         "type": "bullish",
-                        "high": rebound['high'],
-                        "low": rebound['low'],
+                        "high": float(high),
+                        "low": float(low),
                         "time": rebound['time']
                     })
                     break

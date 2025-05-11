@@ -2,6 +2,7 @@
 import pandas as pd
 from notify.discord import send_discord_debug
 from typing import List, Dict
+from decimal import Decimal, ROUND_DOWN
 
 def detect_ob(df: pd.DataFrame) -> List[Dict]:
     """
@@ -15,6 +16,10 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
     for i in range(2, len(df) - max_displacement_candles):
         c1 = df.iloc[i - 2]
         c2 = df.iloc[i - 1]
+        open2 = Decimal(str(c2['open']))
+        close2 = Decimal(str(c2['close']))
+        high2 = max(open2, close2)
+        low2 = min(open2, close2)
         for j in range(1, max_displacement_candles + 1):
             if i + j >= len(df):
                 break
@@ -24,8 +29,8 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
             if c1['high'] < c2['high'] and c2['high'] > c_next['high'] and c_next['close'] < c_next['open']:
                 ob_zones.append({
                     "type": "bearish",
-                    "high": max(c2['open'], c2['close']),
-                    "low": min(c2['open'], c2['close']),
+                    "high": float(high2),
+                    "low": float(low2),
                     "time": c2['time']
                 })
                 break
@@ -34,8 +39,8 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
             if c1['low'] > c2['low'] and c2['low'] < c_next['low'] and c_next['close'] > c_next['open']:
                 ob_zones.append({
                     "type": "bullish",
-                    "high": max(c2['open'], c2['close']),
-                    "low": min(c2['open'], c2['close']),
+                    "high": float(high2),
+                    "low": float(low2),
                     "time": c2['time']
                 })
                 break

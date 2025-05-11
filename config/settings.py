@@ -80,4 +80,4 @@ def fetch_symbol_info(symbols):
     return result
 
 # 실행 시 자동 로딩
-SYMBOLS = fetch_symbol_info(fetch_top_futures_symbols(limit=3))
+SYMBOLS = fetch_symbol_info(fetch_top_futures_symbols())

@@ -3,12 +3,13 @@
 import pandas as pd
 from typing import List, Dict
 from notify.discord import send_discord_debug
+from decimal import Decimal, ROUND_DOWN
 
 def detect_fvg(df: pd.DataFrame) -> List[Dict]:
     fvg_zones = []
 
     # 기본 tick size (추후 get_tick_size(symbol)로 교체 가능)
-    tick_size = 0.0001
+    tick_size = Decimal("0.0001")
     min_width = tick_size * 3  # 최소 유효 폭 조건
 
     for i in range(2, len(df)):
@@ -16,26 +17,30 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
         c3 = df.iloc[i]
 
         # 상승 FVG
-        if c1['high'] < c3['low']:
-            width = c3['low'] - c1['high']
+        if Decimal(str(c1['high'])) < Decimal(str(c3['low'])):
+            low = Decimal(str(c1['high'])).quantize(tick_size)
+            high = Decimal(str(c3['low'])).quantize(tick_size)
+            width = high - low
             if width < min_width:
                 continue
             fvg_zones.append({
                 "type": "bullish",
-                "low": c3['low'],
-                "high": c1['high'],
+                "low": str(low),
+                "high": str(high),
                 "time": df['time'].iloc[i]
             })
 
         # 하락 FVG
-        elif c1['low'] > c3['high']:
-            width = c1['low'] - c3['high']
+        elif Decimal(str(c1['low'])) > Decimal(str(c3['high'])):
+            low = Decimal(str(c3['high'])).quantize(tick_size)
+            high = Decimal(str(c1['low'])).quantize(tick_size)
+            width = high - low
             if width < min_width:
                 continue
             fvg_zones.append({
                 "type": "bearish",
-                "low": c1['low'],
-                "high": c3['high'],
+                "low": str(low),
+                "high": str(high),
                 "time": df['time'].iloc[i]
             })
 

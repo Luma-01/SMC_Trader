@@ -15,9 +15,10 @@ from core.position import PositionManager
 from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
 from exchange.binance_api import get_max_leverage, get_available_balance, get_quantity_precision
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
-from exchange.binance_api import get_tick_size
+from exchange.binance_api import get_tick_size, calculate_quantity
 from exchange.gate_sdk import place_order_with_tp_sl as gate_order, get_open_position as gate_pos
 from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
+from exchange.gate_sdk import calculate_quantity_gate
 from notify.discord import send_discord_debug, send_discord_message
 
 
@@ -146,8 +147,7 @@ async def strategy_loop():
                         # Binance 잔고 기반 진입 수량 계산
                         bnb_balance = get_available_balance()
                         bnb_risk_usdt = bnb_balance * 0.3
-                        bnb_qty_precision = get_quantity_precision(symbol)
-                        bnb_qty = round(bnb_risk_usdt / entry, bnb_qty_precision)
+                        bnb_qty = calculate_quantity(symbol, entry, bnb_balance, meta['leverage'])
                         if bnb_qty <= 0:
                             print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
                             continue
@@ -156,8 +156,7 @@ async def strategy_loop():
                         gate_sym = symbol
                         gate_balance_usdt = gate_balance()
                         gate_risk_usdt = gate_balance_usdt * 0.3
-                        gate_qty_precision = gate_precision(gate_sym)
-                        gate_qty = round(gate_risk_usdt / entry, gate_qty_precision)
+                        gate_qty = calculate_quantity_gate(gate_sym, entry, gate_balance_usdt, meta['leverage'])
                         if gate_qty <= 0:
                             print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
                             continue
