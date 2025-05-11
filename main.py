@@ -194,5 +194,25 @@ async def main():
         strategy_loop()
     )
 
+from exchange.gate_sdk import place_order_with_tp_sl
+
+def force_entry(symbol, side):
+    price = 2.38   # 현재가 근처의 예시값
+    size = 1      # 예시 수량
+    tp = price * 0.99  # 1% 이익 목표
+    sl = price * 1.01  # 1% 손절 기준
+
+    print(f"🚀 강제 진입 테스트: {symbol}, side={side}, size={size}, TP={tp}, SL={sl}")
+    result = place_order_with_tp_sl(symbol, side, size, tp, sl)
+
+    if result:
+        print("✅ 강제 진입 성공")
+    else:
+        print("❌ 강제 진입 실패")
+
+if __name__ == "__main__":
+    # 기존 루프 이전에 삽입 (단발성 실행)
+    force_entry("XRPUSDT", "buy")  # "buy" 또는 "sell" 선택
+
 if __name__ == "__main__":
     asyncio.run(main())

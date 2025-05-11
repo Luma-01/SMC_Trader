@@ -1,7 +1,7 @@
 # exchange/gate_sdk.py
 
 import os
-from time import time
+from time import time, sleep
 from decimal import Decimal
 from gate_api import ApiClient, Configuration, FuturesApi, FuturesOrder
 from dotenv import load_dotenv
@@ -42,9 +42,9 @@ def place_order(symbol: str, side: str, size: float, leverage: int = 20):
             tif="ioc",
             reduce_only=False,
             auto_size="",
-            text="SMC-BOT",
+            text="t-SMC-BOT"
         )
-        response = futures_api.create_futures_order(futures_order=order)
+        response = futures_api.create_futures_order(settle='usdt', futures_order=order)
         msg = f"[ORDER] {symbol} {side.upper()} x{size} | 레버리지: {leverage}"
         print(msg)
         send_discord_message(msg, "gateio")
@@ -57,23 +57,29 @@ def place_order(symbol: str, side: str, size: float, leverage: int = 20):
         send_discord_debug(msg, "gateio")
         return None
 
-def get_open_position(symbol: str):
-    try:
-        positions = futures_api.list_futures_positions()
-        for p in positions:
-            if p.contract == symbol and float(p.size) != 0:
-                direction = 'long' if float(p.size) > 0 else 'short'
+def get_open_position(symbol: str, retry: int = 10, delay: float = 1.5):
+    contract_symbol = normalize_contract_symbol(symbol)
+    for attempt in range(retry):
+        try:
+            position = futures_api.get_position(settle='usdt', contract=contract_symbol)
+            size = float(position.size or 0)
+            if abs(size) > 0:
+                entry = float(position.entry_price) if position.entry_price else 0.0
+                direction = 'long' if size > 0 else 'short'
                 return {
                     "symbol": symbol,
                     "direction": direction,
-                    "entry": float(p.entry_price)
+                    "entry": entry,
+                    "size": size
                 }
-    except Exception as e:
-        msg = f"[ERROR] 포지션 조회 실패: {symbol} → {e}"
-        print(msg)
-        send_discord_debug(msg, "gateio")
-
+        except Exception as e:
+            print(f"[RETRY {attempt + 1}/{retry}] 포지션 조회 실패: {symbol} → {e}")
+            sleep(delay)
+    msg = f"[ERROR] 포지션 조회 실패: {symbol} → 최종 재시도 실패"
+    print(msg)
+    send_discord_debug(msg, "gateio")
     return None
+
     
 # 사용 가능 잔고 조회 (USDT 기준)
 def get_available_balance() -> float:
@@ -109,41 +115,79 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
     tp = float(Decimal(str(tp)).quantize(tick))
     sl = float(Decimal(str(sl)).quantize(tick))
     set_leverage(symbol, leverage)
+    contract = normalize_contract_symbol(symbol)
+
     try:
-        # 진입
+        # 진입 주문
         entry_order = FuturesOrder(
-            contract=normalize_contract_symbol(symbol),
+            contract=contract,
             size=size if side == "buy" else -size,
-            price=0,
+            price="0",
             tif="ioc",
             reduce_only=False,
-            auto_size="",
-            text="SMC-BOT"
+            text="t-SMC-BOT"
         )
-        futures_api.create_futures_order(futures_order=entry_order)
+        entry_res = futures_api.create_futures_order(settle='usdt', futures_order=entry_order)
+        print(f"[DEBUG] entry_res = {entry_res}")
+        if not entry_res or float(entry_res.size or 0) == 0:
+            raise Exception("진입 주문 미체결 (응답에서 size 없음)")
+        
+        # 포지션 체결 대기 (최대 15초 대기)
+        pos = None
+        timeout = time() + 15
+        while time() < timeout:
+            pos = get_open_position(symbol)
+            if pos:
+                break
+            print(f"[WAIT] 포지션 반영 대기 중... {symbol}")
+            sleep(1)
+            
+        if not pos:
+            print(f"[WARNING] 포지션 확인 실패, 주문 응답 기반 TP/SL 생성 시도")
+            confirmed_size = abs(float(entry_res.size or size))
+            entry_price = float(entry_res.fill_price or 0.0)
+            direction = "long" if confirmed_size > 0 else "short"
+        else:
+            confirmed_size = abs(float(pos.get("size", size)))
+            entry_price = float(pos["entry"])
+            direction = pos["direction"]
 
-        # TP
+        confirmed_size = abs(size)  # 기본값
+        try:
+            gate_pos = futures_api.get_position(settle="usdt", contract=contract)
+            confirmed_size = abs(float(gate_pos.size))
+        except Exception as e:
+            print(f"[GATE] 포지션 확인 실패: {e}")
+
+        tp_size = min(round(confirmed_size / 2, 3), confirmed_size)
+        sl_size = confirmed_size
+
+        # TP 주문
         tp_order = FuturesOrder(
-            contract=normalize_contract_symbol(symbol),
-            size=round(size / 2, 3) if side == "buy" else round(-size / 2, 3),
-            price=round(tp, 8),
+            contract=contract,
+            size=tp_size if side == "buy" else -tp_size,
+            price=str(tp),
             tif="gtc",
             reduce_only=True,
-            text="TP-SMC"
+            text="t-TP-SMC"
         )
-        futures_api.create_futures_order(futures_order=tp_order)
+        tp_res = futures_api.create_futures_order(settle='usdt', futures_order=tp_order)
+        if not tp_res:
+            raise Exception("TP 주문 실패")
 
-        # SL (마크가격 기준 스탑 마켓)
+        # SL 주문
         sl_order = FuturesOrder(
-            contract=normalize_contract_symbol(symbol),
-            size=size if side == "buy" else -size,
-            price=0,
+            contract=contract,
+            size=sl_size if side == "buy" else -sl_size,
+            price="0",
             tif="gtc",
             reduce_only=True,
-            text="SL-SMC",
-            stop={"price": round(sl, 8), "type": "mark_price"}
+            text="t-SL-SMC",
+            stop={"price": str(sl), "type": "mark_price"}
         )
-        futures_api.create_futures_order(futures_order=sl_order)
+        sl_res = futures_api.create_futures_order(settle='usdt', futures_order=sl_order)
+        if not sl_res:
+            raise Exception("SL 주문 실패")
 
         msg = f"[TP/SL] {symbol} 진입 및 TP/SL 설정 완료 → TP: {tp}, SL: {sl}"
         print(msg)
@@ -158,7 +202,8 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         
 def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
     try:
-        pos = futures_api.get_futures_position(symbol)
+        contract = normalize_contract_symbol(symbol)
+        pos = futures_api.get_position(settle='usdt', contract=contract)
         size = float(pos.size)
         if size == 0:
             return None
@@ -170,11 +215,12 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
             size=size if direction == 'long' else -size,
             tif="gtc",
             reduce_only=True,
-            text="SL-UPDATE",
+            text="t-SL-UPDATE",
             trigger={"price": normalized_stop, "rule": 2}
         )
 
-        futures_api.create_futures_order(futures_order=sl_order)
+        futures_api.create_futures_order(settle='usdt', futures_order=sl_order)
+
         msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {stop_price}"
         print(msg)
         send_discord_debug(msg, "gateio")
@@ -187,7 +233,8 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
     
 def close_position(symbol: str):
     try:
-        pos = futures_api.get_futures_position(symbol)
+        contract = normalize_contract_symbol(symbol)
+        pos = futures_api.get_position(settle='usdt', contract=contract)
         size = float(pos.size)
         if size == 0:
             return False
@@ -197,9 +244,9 @@ def close_position(symbol: str):
             size=-size,
             tif="ioc",
             reduce_only=True,
-            text="FORCE-CLOSE"
+            text="t-FORCE-CLOSE"
         )
-        futures_api.create_futures_order(futures_order=close_order)
+        futures_api.create_futures_order(settle='usdt', futures_order=close_order)
         
         print(f"[GATE] 포지션 강제 종료 완료 | {symbol}")
         send_discord_debug(f"[GATE] 포지션 강제 종료 완료 | {symbol}", "gateio")
