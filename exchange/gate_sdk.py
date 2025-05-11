@@ -10,13 +10,13 @@ import math
 
 load_dotenv()
 
-config = Configuration(
+Configuration.set_default_configuration(Configuration(
     key=os.getenv("GATEIO_API_KEY"),
     secret=os.getenv("GATEIO_API_SECRET"),
     host="https://api.gateio.ws/api/v4"
-)
+))
 
-api_client = ApiClient(config)
+api_client = ApiClient()
 futures_api = FuturesApi(api_client)
 
 def set_leverage(symbol: str, leverage: int):
@@ -115,12 +115,22 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
     tp = float(Decimal(str(tp)).quantize(tick))
     sl = float(Decimal(str(sl)).quantize(tick))
     set_leverage(symbol, leverage)
-    contract = normalize_contract_symbol(symbol)
+    contract_symbol = normalize_contract_symbol(symbol)
+    try:
+        contract = futures_api.get_futures_contract(settle='usdt', contract=contract_symbol)
+    except Exception as e:
+        print(f"[ERROR] 계약 정보 조회 실패: {e}")
+        send_discord_debug(f"[ERROR] 계약 정보 조회 실패: {e}", "gateio")
+        return False
+
+    # 디버깅: 환경 변수 체크
+    print("[DEBUG] API KEY:", os.getenv("GATEIO_API_KEY"))
+    print("[DEBUG] API SECRET:", os.getenv("GATEIO_API_SECRET"))
 
     try:
         # 진입 주문
         entry_order = FuturesOrder(
-            contract=contract,
+            contract=contract_symbol,
             size=size if side == "buy" else -size,
             price="0",
             tif="ioc",
@@ -148,7 +158,7 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
             entry_price = float(entry_res.fill_price or 0.0)
             direction = "long" if confirmed_size > 0 else "short"
         else:
-            confirmed_size = abs(float(pos.get("size", size)))
+            confirmed_size = abs(float(pos["size"]))
             entry_price = float(pos["entry"])
             direction = pos["direction"]
 
@@ -159,25 +169,29 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         except Exception as e:
             print(f"[GATE] 포지션 확인 실패: {e}")
 
-        tp_size = min(round(confirmed_size / 2, 3), confirmed_size)
-        sl_size = confirmed_size
+        step_size = float(contract.order_size_min)
+        precision = get_contract_precision(symbol)
+        tp_size = round(math.floor((confirmed_size / 2) / step_size) * step_size, precision)
+        sl_size = round(math.floor(confirmed_size / step_size) * step_size, precision)
 
         # TP 주문
         tp_order = FuturesOrder(
-            contract=contract,
+            contract=contract_symbol,
             size=tp_size if side == "buy" else -tp_size,
             price=str(tp),
             tif="gtc",
             reduce_only=True,
             text="t-TP-SMC"
         )
+        if tp_size <= 0:
+            raise Exception("TP 주문 수량이 0 이하")
         tp_res = futures_api.create_futures_order(settle='usdt', futures_order=tp_order)
         if not tp_res:
             raise Exception("TP 주문 실패")
 
         # SL 주문
         sl_order = FuturesOrder(
-            contract=contract,
+            contract=contract_symbol,
             size=sl_size if side == "buy" else -sl_size,
             price="0",
             tif="gtc",
@@ -185,6 +199,8 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
             text="t-SL-SMC",
             stop={"price": str(sl), "type": "mark_price"}
         )
+        if sl_size <= 0:
+            raise Exception("SL 주문 수량이 0 이하")
         sl_res = futures_api.create_futures_order(settle='usdt', futures_order=sl_order)
         if not sl_res:
             raise Exception("SL 주문 실패")
