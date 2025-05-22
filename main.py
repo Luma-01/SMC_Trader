@@ -2,27 +2,109 @@
 
 import sys
 import asyncio
-
+from decimal import Decimal                # ★ 추가 import
+from datetime import datetime, timezone
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import pandas as pd
 from core.structure import detect_structure
-from config.settings import SYMBOLS, RR, SL_BUFFER
+from config.settings import (
+    SYMBOLS,
+    SYMBOLS_GATE,          # ★ 추가
+    RR,
+    SL_BUFFER,
+    DEFAULT_LEVERAGE,      # ★ 추가
+)
 from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
 from core.position import PositionManager
-from exchange.binance_api import place_order as binance_order, get_open_position as binance_pos, set_leverage
-from exchange.binance_api import get_max_leverage, get_available_balance, get_quantity_precision
+from core.monitor import maybe_send_weekly_report
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
 from exchange.binance_api import get_tick_size, calculate_quantity
-from exchange.gate_sdk import place_order_with_tp_sl as gate_order, get_open_position as gate_pos
-from exchange.gate_sdk import get_available_balance as gate_balance, get_quantity_precision as gate_precision
-from exchange.gate_sdk import calculate_quantity_gate
+from exchange.binance_api import (
+    set_leverage,
+    get_max_leverage,
+    get_available_balance,
+    get_open_position as binance_pos,   # ★ 복원
+)
+from exchange.gate_sdk import (
+    place_order_with_tp_sl as gate_order,
+    get_available_balance as gate_balance,
+    calculate_quantity_gate,
+    get_tick_size_gate,
+    normalize_contract_symbol as to_gate,      # ★ 이미 추가
+)
 from notify.discord import send_discord_debug, send_discord_message
 
-
 pm = PositionManager()
+
+# ───────────────────────────── 헬퍼 ─────────────────────────────
+async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
+    """
+    symbol : Binance → BTCUSDT / Gate → BTC_USDT
+    meta   : 최소 {"leverage": …}.  비어 있으면 DEFAULT_LEVERAGE 사용
+    """
+    leverage = meta.get("leverage", DEFAULT_LEVERAGE)
+
+    try:
+        # ▸ candle dict 는 항상 Binance 포맷(BTCUSDT) 키 사용
+        is_gate = "_USDT" in symbol
+        base_sym = symbol.replace("_", "") if is_gate else symbol
+
+        df_htf = candles.get(base_sym, {}).get(htf_tf)
+        df_ltf = candles.get(base_sym, {}).get(ltf_tf)
+        if df_htf is None or df_ltf is None or len(df_htf) < 30 or len(df_ltf) < 30:
+            return
+
+        htf = pd.DataFrame(df_htf); htf.attrs["tf"] = htf_tf
+        ltf = pd.DataFrame(df_ltf)
+
+        htf_struct = detect_structure(htf)
+        if (
+            htf_struct is None
+            or "structure" not in htf_struct.columns
+            or htf_struct["structure"].dropna().empty
+        ):
+            return
+
+        if is_gate:
+            tick_size = Decimal(str(get_tick_size_gate(symbol)))
+        else:
+            tick_size = get_tick_size(base_sym)
+        signal, direction = is_iof_entry(htf_struct, ltf, tick_size)
+        if not signal or direction is None:
+            return
+
+        entry = ltf["close"].iloc[-1]
+        sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
+
+        order_ok = False
+        if is_gate:
+            order_ok = gate_order(
+                symbol,
+                "buy" if direction == "long" else "sell",
+                calculate_quantity_gate(symbol, entry, gate_balance(), leverage),
+                tp, sl, leverage
+            )
+        else:
+            order_ok = binance_order_with_tp_sl(
+                symbol,
+                "buy" if direction == "long" else "sell",
+                calculate_quantity(symbol, entry, get_available_balance(), leverage),
+                tp, sl,
+                hedge=False
+            )
+
+        if order_ok:
+            pm.enter(symbol, direction, entry, sl, tp)
+        else:
+            print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
+            send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")
+        pm.update_price(symbol, entry, ltf_df=ltf)      # MSS 보호선 갱신
+
+    except Exception as e:
+        send_discord_debug(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
 
 def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
     if direction == 'long':
@@ -70,122 +152,20 @@ async def strategy_loop():
     print("📈 전략 루프 시작됨 (5초 간격)")
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
+        # ───── Binance 스윙 1h→5m ─────
         for symbol, meta in SYMBOLS.items():
-            for htf_tf, ltf_tf in [("1h", "5m"), ("15m", "1m")]:
-                try:
-                    df_htf = candles.get(symbol, {}).get(htf_tf, None)
-                    df_ltf = candles.get(symbol, {}).get(ltf_tf, None)
+            await handle_pair(symbol, meta, "1h", "5m")
 
-                    if df_htf is None or df_ltf is None:
-                        print(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)")
-                        send_discord_debug(f"[{symbol}] ❌ 캔들 데이터 자체 None (htf/ltf)", "aggregated")
-                        continue
-
-                    if not df_htf or not df_ltf:
-                        print(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)")
-                        send_discord_debug(f"[SKIP] {symbol} 캔들 데이터 부족 (htf/ltf)", "aggregated")
-                        continue
-                    if len(df_htf) < 30 or len(df_ltf) < 30:
-                        continue
-                    
-                    htf = pd.DataFrame(df_htf)
-                    htf.attrs["symbol"] = symbol
-                    htf.attrs["tf"] = htf_tf
-                    ltf = pd.DataFrame(df_ltf)
-                    ltf.attrs["symbol"] = symbol
-
-                    # ✅ 디버깅: 최근 HTF 캔들 확인
-                    #print(f"[DEBUG] {symbol} ({htf_tf}) 최근 HTF 10개:")
-                    #print(htf.tail(10)[['time', 'open', 'high', 'low', 'close']])
-
-                    htf_struct = detect_structure(htf)
-                    #print(f"[DEBUG] {symbol} 구조 태그 있는 HTF:\n{htf_struct[['time', 'structure']].tail(10)}")
-
-                    if htf_struct is None or not isinstance(htf_struct, pd.DataFrame):
-                        print(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)")
-                        send_discord_debug(f"[{symbol}] ❌ detect_structure 결과 이상 (None 또는 DataFrame 아님)", "aggregated")
-                        continue
-                    if 'structure' not in htf_struct.columns:
-                        print(f"[{symbol}] ❌ 구조 컬럼 없음")
-                        send_discord_debug(f"[{symbol}] ❌ 구조 컬럼 없음", "aggregated")
-                        continue
-                    if htf_struct['structure'].dropna().empty:
-                        print(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)")
-                        send_discord_debug(f"[{symbol}] ❌ 구조 컬럼에 값 없음 (모두 NaN)", "aggregated")
-                        continue
-                    
-                    # 마지막 구조 로그 출력
-                    #last_struct = htf_struct['structure'].dropna().iloc[-1]
-                    #print(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}")
-                    #send_discord_debug(f"[IOF DEBUG] {symbol} 구조 마지막 값 = {last_struct}", "aggregated")
-
-                    try:
-                        tick_size = get_tick_size(symbol)
-                        signal, direction = is_iof_entry(htf_struct, ltf, tick_size)
-                    except Exception as e:
-                        print(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}")
-                        send_discord_debug(f"[{symbol}] ❌ IOF 함수 실행 중 오류: {e}", "aggregated")
-                        continue
-                    
-                    if direction is None:
-                        print(f"[{symbol}] 🚫 IOF 조건 불충족 → 구조 신호 없음 (direction=None)")
-                        send_discord_debug(f"[{symbol}] ❌ 구조 판단 실패 (direction=None)", "aggregated")
-                        continue
-                    if not signal:
-                        print(f"[{symbol}] 🚫 IOF 조건 불충족 → 진입 영역 외 (FVG/OB/BB 미충족)")
-                        continue
-                    
-                    if ltf.empty or 'close' not in ltf.columns or ltf['close'].dropna().empty:
-                        print(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음")
-                        send_discord_debug(f"[{symbol}] ❌ 진입 시도 실패: LTF 종가 없음", "aggregated")
-                        continue
-                    
-                    if not pm.has_position(symbol):
-                        entry = ltf['close'].dropna().iloc[-1]
-                        sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
-
-                        # Binance 잔고 기반 진입 수량 계산
-                        bnb_balance = get_available_balance()
-                        bnb_risk_usdt = bnb_balance * 0.3
-                        bnb_qty = calculate_quantity(symbol, entry, bnb_balance, meta['leverage'])
-                        if bnb_qty <= 0:
-                            print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
-                            continue
-                        
-                        # Gate 잔고 기반 진입 수량 계산
-                        gate_sym = symbol
-                        gate_balance_usdt = gate_balance()
-                        gate_risk_usdt = gate_balance_usdt * 0.3
-                        gate_qty = calculate_quantity_gate(gate_sym, entry, gate_balance_usdt, meta['leverage'])
-                        if gate_qty <= 0:
-                            print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
-                            continue
-                        
-                        lev = meta['leverage']
-
-                        if (htf_tf, ltf_tf) == ("1h", "5m"):
-                            if bnb_qty <= 0:
-                                print(f"[{symbol}] ❌ Binance 진입 실패: 계산된 수량이 0 이하 (balance={bnb_balance}, qty={bnb_qty})")
-                                continue
-                            binance_order_with_tp_sl(symbol, 'buy' if direction == 'long' else 'sell', bnb_qty, tp, sl)
-                            pm.enter(symbol, direction, entry, sl, tp)
-                        elif (htf_tf, ltf_tf) == ("15m", "1m"):
-                            if gate_qty <= 0:
-                                print(f"[{symbol}] ❌ Gate 진입 실패: 계산된 수량이 0 이하 (balance={gate_balance_usdt}, qty={gate_qty})")
-                                continue
-                            gate_order(gate_sym, 'buy' if direction == 'long' else 'sell', gate_qty, tp, sl, lev)
-                            pm.enter(symbol, direction, entry, sl, tp)
-
-                    # 실시간 구조 업데이트 + MSS 보호선 체크
-                    current_price = ltf['close'].iloc[-1]
-                    pm.update_price(symbol, current_price, ltf_df=ltf)
-
-                except Exception as e:
-                    error_msg = f"❌ [ERROR] {symbol} 전략 오류: {e}"
-                    print(error_msg)
-                    send_discord_debug(error_msg, "aggregated")
+        # ───── Gate.io 단타 15m→1m ─────
+        for symbol in SYMBOLS_GATE:
+            # candles·tick_size 조회는 BTCUSDT, 주문은 BTC_USDT
+            await handle_pair(to_gate(symbol), {}, "15m", "1m")
+# ──────────────────────────────────────────────────────────────
 
         await asyncio.sleep(5)
+
+        # ───── 주간 리포트 (일요일 자정 UTC) ─────
+        maybe_send_weekly_report(datetime.now(timezone.utc))
 
 async def main():
     initialize()
@@ -194,25 +174,57 @@ async def main():
         strategy_loop()
     )
 
-from exchange.gate_sdk import place_order_with_tp_sl
-
 def force_entry(symbol, side):
-    price = 2.38   # 현재가 근처의 예시값
-    size = 1      # 예시 수량
-    tp = price * 1.01  # 1% 이익 목표
-    sl = price * 0.99  # 1% 손절 기준
+    """
+    임시·수동 진입(디버그)용 헬퍼  
+    side == "buy"  ➜ long,  "sell" ➜ short
+    TP·SL를 **진입 방향과 일치**하도록 1 % 고정
+    """
+    # 현재 마크가격 조회 (Gate·Binance 모두 지원)
+    if symbol.endswith("_USDT"):
+        import requests, json
+        mk = requests.get(f"https://fx-api.gateio.ws/api/v4/futures/usdt/mark_price/{symbol}").json()
+        price = float(mk["mark_price"])
+    else:
+        import requests
+        mk = requests.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}").json()
+        price = float(mk["markPrice"])
+        
+    size  = 1      # 테스트 수량
+
+    if side.lower() == "buy":      # long
+        tp = price * 1.01          # +1 % 이익
+        sl = price * 0.99          # −1 % 손절
+    else:                          # short
+        tp = price * 0.99          # −1 % 이익
+        sl = price * 1.01          # +1 % 손절
 
     print(f"🚀 강제 진입 테스트: {symbol}, side={side}, size={size}, TP={tp}, SL={sl}")
-    result = place_order_with_tp_sl(symbol, side, size, tp, sl)
-
-    if result:
+    
+    # Gate 테스트용 강제 진입
+    gate_sym = to_gate(symbol)
+    if gate_order(gate_sym, side, size, tp, sl, DEFAULT_LEVERAGE):
         print("✅ 강제 진입 성공")
     else:
         print("❌ 강제 진입 실패")
 
-if __name__ == "__main__":
-    # 기존 루프 이전에 삽입 (단발성 실행)
-    force_entry("XRPUSDT", "buy")  # "buy" 또는 "sell" 선택
 
+# entrypoint
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="SMC-Trader launcher")
+    parser.add_argument("--demo",  action="store_true",
+                        help="강제 진입(debug)만 실행하고 종료")
+    parser.add_argument("--side",  default="buy",
+                        choices=["buy", "sell"], help="강제 진입 방향")
+    parser.add_argument("--sym",   default="XRPUSDT",
+                        help="거래 심볼")
+    args = parser.parse_args()
+
+    if args.demo:
+        # ▸ 단발성 진입 테스트만 수행
+        force_entry(args.sym, args.side)
+    else:
+        # ▸ 전체 전략 루프 실행
+        asyncio.run(main())

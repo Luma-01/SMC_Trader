@@ -2,10 +2,9 @@
 
 from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
+from core.monitor import on_entry, on_exit     # ★ 추가
 from notify.discord import send_discord_message, send_discord_debug
-from exchange.router import update_stop_loss
-from exchange.router import cancel_order
-from exchange.router import update_stop_loss
+from exchange.router import update_stop_loss, cancel_order
 
 class PositionManager:
     def __init__(self):
@@ -25,6 +24,7 @@ class PositionManager:
             "mss_triggered": False,
             "sl_order_id": None
         }
+        on_entry(symbol, direction, entry, sl, tp)   # ★ 호출
 
         # 진입 시 SL 주문 생성
         sl_result = update_stop_loss(symbol, direction, sl)
@@ -49,6 +49,10 @@ class PositionManager:
         half_exit = pos['half_exit']
         protective = pos['protective_level']
         mss_triggered = pos['mss_triggered']
+
+        # 절반 익절 전 && MSS 발생 전 → 트레일링 SL 갱신 시도
+        if not half_exit and not mss_triggered:
+            self.try_update_trailing_sl(symbol, current_price)
 
         # MSS 먼저 발생했는지 확인
         if not mss_triggered and ltf_df is not None:
@@ -137,7 +141,7 @@ class PositionManager:
                 send_discord_debug(f"[DEBUG] {symbol} SHORT 보호선 이탈로 포지션 완전 종료", "aggregated")
                 self.close(symbol)
 
-    def close(self, symbol: str):
+    def close(self, symbol: str, exit_price: float | None = None):
         if symbol in self.positions:
             # SL 주문 취소 시도
             sl_order_id = self.positions[symbol].get("sl_order_id")
@@ -145,7 +149,10 @@ class PositionManager:
                 cancel_order(symbol, sl_order_id)
                 print(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})")
                 send_discord_debug(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})", "aggregated")
+            if exit_price is None:
+                exit_price = self.positions[symbol]["entry"]
             del self.positions[symbol]
+            on_exit(symbol, exit_price)              # ★ 호출
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
         self.positions[symbol] = {
@@ -167,3 +174,37 @@ class PositionManager:
             return new_sl > current_sl
         else:
             return new_sl < current_sl
+        
+    def try_update_trailing_sl(self, symbol: str, current_price: float, threshold_pct: float = 0.01):
+        if symbol not in self.positions:
+            return
+
+        pos = self.positions[symbol]
+        direction = pos['direction']
+        current_sl = pos['sl']
+
+        # 절반 익절 이후는 보호선 로직에 맡기므로 생략
+        if pos.get('half_exit'):
+            return
+
+        # 트레일링 SL 계산
+        if direction == "long":
+            new_sl = current_price * (1 - threshold_pct)
+            if new_sl > current_sl and self.should_update_sl(symbol, new_sl):
+                sl_result = update_stop_loss(symbol, direction, new_sl)
+                if isinstance(sl_result, int):
+                    pos['sl'] = new_sl
+                    pos['sl_order_id'] = sl_result
+                    print(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
+                    send_discord_debug(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
+
+        elif direction == "short":
+            new_sl = current_price * (1 + threshold_pct)
+            if new_sl < current_sl and self.should_update_sl(symbol, new_sl):
+                sl_result = update_stop_loss(symbol, direction, new_sl)
+                if isinstance(sl_result, int):
+                    pos['sl'] = new_sl
+                    pos['sl_order_id'] = sl_result
+                    print(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
+                    send_discord_debug(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
+

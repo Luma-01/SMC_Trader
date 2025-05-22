@@ -1,13 +1,24 @@
 # exchange/router.py
 
 from exchange.binance_api import update_stop_loss_order as binance_sl
-from exchange.gate_sdk import update_stop_loss_order as gate_sl
+# Gate 전용 함수 import
+from exchange.gate_sdk import (
+    update_stop_loss_order as gate_sl,
+    normalize_contract_symbol as to_gate,
+)
+# Gate 심볼 집합(BTC_USDT 형식) 생성
+from config.settings import SYMBOLS_GATE
+GATE_SET = {to_gate(sym) for sym in SYMBOLS_GATE}
 
 def update_stop_loss(symbol: str, direction: str, stop_price: float):
-    if "_USDT" in symbol:  # Gate
+    """
+    symbol 예시
+      - Binance : BTCUSDT
+      - Gate    : BTC_USDT  ← 이미 변환된 값
+    """
+    if symbol in GATE_SET:       # Gate 심볼이면
         return gate_sl(symbol, direction, stop_price)
-    else:  # Binance
-        return binance_sl(symbol, direction, stop_price)
+    return binance_sl(symbol, direction, stop_price)
     
 def cancel_order(symbol: str, order_id: int):
     if "_USDT" in symbol:

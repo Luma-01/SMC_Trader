@@ -53,7 +53,7 @@ def get_max_leverage(symbol: str) -> int:
 def place_order(symbol: str, side: str, quantity: float, position_side: str = None):
     try:
         if position_side is None:
-            position_side = position_side or ("LONG" if side == "buy" else "SHORT")
+            position_side = "LONG" if side == "buy" else "SHORT"
         order = client.futures_create_order(
             symbol=symbol,
             side=SIDE_BUY if side == 'buy' else SIDE_SELL,
@@ -69,22 +69,35 @@ def place_order(symbol: str, side: str, quantity: float, position_side: str = No
     except Exception as e:
         print(f"[ERROR] 주문 실패: {symbol} - {e}")
         send_discord_debug(f"[BINANCE] 주문 실패: {symbol} → {e}", "binance")
-        return None
+        return False
     
-def place_order_with_tp_sl(symbol: str, side: str, quantity: float, tp: float, sl: float):
+def place_order_with_tp_sl(
+    symbol: str,
+    side: str,
+    quantity: float,
+    tp: float,
+    sl: float,
+    hedge: bool = False        # ← 계정이 One-Way 면 False
+) -> bool:                     # ← 성공 여부만 반환
     try:
         position_side = "LONG" if side == "buy" else "SHORT"
+        order_kwargs = dict(
+            symbol=symbol,
+            side=SIDE_BUY if side == "buy" else SIDE_SELL,
+            type=ORDER_TYPE_MARKET,
+            quantity=quantity,
+        )
+        if hedge:                          # 헤지 모드에서만 전달
+            order_kwargs["positionSide"] = position_side
+
+        # ───────────── 진입 ─────────────
         opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
         orders = []
 
         # 진입
-        orders.append(client.futures_create_order(
-            symbol=symbol,
-            side=SIDE_BUY if side == 'buy' else SIDE_SELL,
-            type=ORDER_TYPE_MARKET,
-            quantity=quantity,
-            positionSide=position_side
-        ))
+        entry_res = client.futures_create_order(**order_kwargs)
+        if entry_res["status"] not in ("FILLED", "PARTIALLY_FILLED"):
+            raise ValueError(f"시장 주문 미체결: {entry_res}")
 
         # TP
         orders.append(client.futures_create_order(
@@ -110,12 +123,12 @@ def place_order_with_tp_sl(symbol: str, side: str, quantity: float, tp: float, s
         ))
         print(f"[TP/SL] {symbol} 진입 및 TP/SL 설정 → TP: {tp}, SL: {sl}")
         send_discord_message(f"[TP/SL] {symbol} 진입 및 TP/SL 설정 → TP: {tp}, SL: {sl}", "binance")
-        return orders
+        return True
     
     except Exception as e:
         print(f"[ERROR] TP/SL 포함 주문 실패: {symbol} - {e}")
         send_discord_debug(f"[BINANCE] TP/SL 포함 주문 실패: {symbol} → {e}", "binance")
-        return None
+        return False
     
 def get_open_position(symbol: str):
     try:
@@ -160,7 +173,7 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         msg = f"[ERROR] SL 갱신 실패: {symbol} → {e}"
         print(msg)
         send_discord_debug(msg, "binance")
-        return None
+        return False
     
 def cancel_order(symbol: str, order_id: int):
     try:
@@ -173,7 +186,7 @@ def cancel_order(symbol: str, order_id: int):
     except Exception as e:
         print(f"[ERROR] 주문 취소 실패: {symbol} - {e}")
         send_discord_debug(f"[BINANCE] 주문 취소 실패: {symbol} → {e}", "binance")
-        return None
+        return False
         
 # ✅ 사용 가능 잔고 조회 (USDT 기준)
 def get_available_balance() -> float:

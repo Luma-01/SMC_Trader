@@ -77,7 +77,9 @@ async def stream_live_candles():
                         continue
                     stream_symbol = symbol_tf[0].upper()
                     tf = symbol_tf[1]
-                    symbol = stream_symbol.replace("USDT", "_USDT")
+                    
+                    # Binance 심볼 그대로 사용; Gate 전용은 별도 매핑으로 처리
+                    symbol = stream_symbol.upper()
 
                     k = data['k']
                     if not k['x']:  # 캔들 미완성 시 무시

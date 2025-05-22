@@ -34,3 +34,11 @@ def send_discord_debug(message: str, exchange: str = "aggregated"):
 
 def send_discord_message(message: str, exchange: str = "aggregated"):
     _send_discord(message, "message", exchange)
+
+def send_discord_file(file_path: str, channel: str = "aggregated"):
+    """이미지·CSV 등을 Discord로 전송"""
+    url = WEBHOOKS.get(channel)
+    if not url:
+        return
+    with open(file_path, "rb") as fp:
+        requests.post(url, files={"file": fp})

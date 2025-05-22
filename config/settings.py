@@ -81,3 +81,11 @@ def fetch_symbol_info(symbols):
 
 # 실행 시 자동 로딩
 SYMBOLS = fetch_symbol_info(fetch_top_futures_symbols())
+
+# ───────────────────────────── 추가 ─────────────────────────────
+# 거래소별 심볼 테이블 분리
+#  - Binance : BTCUSDT 형식 그대로 사용
+#  - Gate.io : 주문 직전에만 BTC_USDT 로 변환하므로 여기선 그대로 둔다
+SYMBOLS_BINANCE = SYMBOLS                       # dict 그대로 참조
+SYMBOLS_GATE    = list(SYMBOLS.keys())          # ▶ 리스트면 set·len 등 사용 쉬움
+# ───────────────────────────────────────────────────────────────
