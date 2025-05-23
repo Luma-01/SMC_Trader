@@ -81,19 +81,22 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         order_ok = False
         if is_gate:
+            qty = calculate_quantity_gate(symbol, entry, gate_balance(), leverage)
+            if qty <= 0:
+                return
             order_ok = gate_order(
                 symbol,
                 "buy" if direction == "long" else "sell",
-                calculate_quantity_gate(symbol, entry, gate_balance(), leverage),
-                tp, sl, leverage
+                qty, tp, sl, leverage
             )
         else:
+            qty = calculate_quantity(symbol, entry, get_available_balance(), leverage)
+            if qty <= 0:
+                return
             order_ok = binance_order_with_tp_sl(
                 symbol,
                 "buy" if direction == "long" else "sell",
-                calculate_quantity(symbol, entry, get_available_balance(), leverage),
-                tp, sl,
-                hedge=False
+                qty, tp, sl            # <-- hedge 파라미터 제거
             )
 
         if order_ok:
@@ -104,7 +107,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         pm.update_price(symbol, entry, ltf_df=ltf)      # MSS 보호선 갱신
 
     except Exception as e:
-        send_discord_debug(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
+        print(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
+        #send_discord_debug(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
 
 def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
     if direction == 'long':
@@ -174,7 +178,7 @@ async def main():
         strategy_loop()
     )
 
-def force_entry(symbol, side):
+def force_entry(symbol, side, qty_override=None):
     """
     임시·수동 진입(디버그)용 헬퍼  
     side == "buy"  ➜ long,  "sell" ➜ short
@@ -182,15 +186,48 @@ def force_entry(symbol, side):
     """
     # 현재 마크가격 조회 (Gate·Binance 모두 지원)
     if symbol.endswith("_USDT"):
-        import requests, json
-        mk = requests.get(f"https://fx-api.gateio.ws/api/v4/futures/usdt/mark_price/{symbol}").json()
-        price = float(mk["mark_price"])
+        import requests, json, time, requests
+
+        def gate_mark(s: str) -> float:
+            """mark_price → 실패 시 ticker 로 Fallback"""
+            url = f"https://fx-api.gateio.ws/api/v4/futures/usdt/mark_price/{s}"
+            data = requests.get(url, timeout=3).json()
+            if isinstance(data, dict) and "mark_price" in data:
+                return float(data["mark_price"])
+
+            # ─ fallback: /tickers (배열)
+            tick = requests.get(
+                "https://fx-api.gateio.ws/api/v4/futures/usdt/tickers",
+                params={"contract": s},
+                timeout=3,
+            ).json()
+            if tick and isinstance(tick, list):
+                return float(tick[0]["last"])
+            raise RuntimeError(f"Gate mark price fetch failed: {data}")
+
+        price = gate_mark(symbol)
     else:
         import requests
         mk = requests.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}").json()
         price = float(mk["markPrice"])
         
-    size  = 1      # 테스트 수량
+    # ───────── 수량 결정 ─────────
+    leverage = DEFAULT_LEVERAGE
+
+    if qty_override is not None:
+        # 사용자가 --qty 로 직접 지정
+        size = qty_override
+    else:
+        # 자동 산출
+        if symbol.endswith("_USDT"):      # Gate 선물
+            size = calculate_quantity_gate(symbol, price, gate_balance(), leverage)
+        else:                             # Binance 선물
+            set_leverage(symbol, leverage)      # 미리 적용
+            size = calculate_quantity(symbol, price, get_available_balance(), leverage)
+
+    if size <= 0:
+        print("❌ 최소 주문 수량 미달 – 강제 진입 취소")
+        return
 
     if side.lower() == "buy":      # long
         tp = price * 1.01          # +1 % 이익
@@ -201,12 +238,12 @@ def force_entry(symbol, side):
 
     print(f"🚀 강제 진입 테스트: {symbol}, side={side}, size={size}, TP={tp}, SL={sl}")
     
-    # Gate 테스트용 강제 진입
-    gate_sym = to_gate(symbol)
-    if gate_order(gate_sym, side, size, tp, sl, DEFAULT_LEVERAGE):
-        print("✅ 강제 진입 성공")
-    else:
-        print("❌ 강제 진입 실패")
+    if symbol.endswith("_USDT"):          # Gate 선물
+        ok = gate_order(symbol, side, size, tp, sl, leverage)
+    else:                                 # Binance 선물 심볼
+        ok = binance_order_with_tp_sl(symbol, side, size, tp, sl)
+
+    print("✅ 강제 진입 성공" if ok else "❌ 강제 진입 실패")
 
 
 # entrypoint
@@ -220,11 +257,13 @@ if __name__ == "__main__":
                         choices=["buy", "sell"], help="강제 진입 방향")
     parser.add_argument("--sym",   default="XRPUSDT",
                         help="거래 심볼")
+    parser.add_argument("--qty",   type=float, default=None,
+                        help="테스트용 강제 수량(지정 시 자동 계산 건너뜀)")
     args = parser.parse_args()
 
     if args.demo:
         # ▸ 단발성 진입 테스트만 수행
-        force_entry(args.sym, args.side)
+        force_entry(args.sym, args.side, args.qty)
     else:
         # ▸ 전체 전략 루프 실행
         asyncio.run(main())

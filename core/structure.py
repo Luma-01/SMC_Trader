@@ -52,7 +52,7 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
     if structure_type and ((structure_type, structure_time) != last_sent_structure.get((symbol, tf))):
         log_msg = f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {structure_time}"
         print(log_msg)
-        send_discord_debug(log_msg, "aggregated")
+        #send_discord_debug(log_msg, "aggregated")
         last_sent_structure[(symbol, tf)] = (structure_type, structure_time)
 
 

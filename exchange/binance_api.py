@@ -12,6 +12,7 @@ from binance.enums import (
     ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT, TIME_IN_FORCE_GTC
 )
 from binance.exceptions import BinanceAPIException
+import time
 
 load_dotenv()
 
@@ -20,6 +21,19 @@ api_secret = os.getenv("BINANCE_API_SECRET")
 client = Client(api_key, api_secret, tld='com')
 client.API_URL = "https://fapi.binance.com/fapi"
 ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
+
+# ────────────────────────────────────────────────
+# ▸ 선물 **포지션 모드**(One-Way / Hedge) 캐싱
+#   - Hedge 모드면 모든 주문에 `positionSide` 전달
+# ────────────────────────────────────────────────
+FUTURES_MODE_HEDGE: bool | None = None
+
+def _ensure_mode_cached() -> None:
+    """Binance 선물 계정의 포지션 모드를 1회만 조회-저장"""
+    global FUTURES_MODE_HEDGE
+    if FUTURES_MODE_HEDGE is None:
+        info = client.futures_get_position_mode()
+        FUTURES_MODE_HEDGE = bool(info["dualSidePosition"])
 
 def set_leverage(symbol: str, leverage: int) -> None:
     try:
@@ -50,18 +64,21 @@ def get_max_leverage(symbol: str) -> int:
         send_discord_debug(f"[BINANCE] 최대 레버리지 조회 실패: {symbol} → {e}", "binance")
     return 20  # 기본값
 
-def place_order(symbol: str, side: str, quantity: float, position_side: str = None):
+def place_order(symbol: str, side: str, quantity: float):
+    """단순 시장 진입 (계정 모드에 맞춰 positionSide 자동 처리)"""
     try:
-        if position_side is None:
-            position_side = "LONG" if side == "buy" else "SHORT"
-        order = client.futures_create_order(
+        _ensure_mode_cached()
+        kwargs = dict(
             symbol=symbol,
-            side=SIDE_BUY if side == 'buy' else SIDE_SELL,
+            side=SIDE_BUY if side == "buy" else SIDE_SELL,
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
-            positionSide=position_side
         )
-        msg = f"[ORDER] {symbol} {side.upper()} x{quantity} | 포지션: {position_side}"
+        if FUTURES_MODE_HEDGE:
+            kwargs["positionSide"] = "LONG" if side == "buy" else "SHORT"
+
+        order = client.futures_create_order(**kwargs)
+        msg = f"[ORDER] {symbol} {side.upper()} x{quantity} | 포지션: {side}"
         print(msg)
         send_discord_message(msg, "binance")
         return order
@@ -77,54 +94,120 @@ def place_order_with_tp_sl(
     quantity: float,
     tp: float,
     sl: float,
-    hedge: bool = False        # ← 계정이 One-Way 면 False
-) -> bool:                     # ← 성공 여부만 반환
+) -> bool:
+    """
+    ① 시장 주문이 바로 체결되지 않으면 5 초 동안 폴링  
+    ② 증거금 부족(-2019) 시 수량을 10 %씩 줄여 최대 3회 재시도  
+    ③ 실제 체결 수량으로 TP/SL 주문을 생성
+    """
     try:
+        _ensure_mode_cached()
         position_side = "LONG" if side == "buy" else "SHORT"
-        order_kwargs = dict(
+        base_kwargs = dict(
             symbol=symbol,
             side=SIDE_BUY if side == "buy" else SIDE_SELL,
             type=ORDER_TYPE_MARKET,
-            quantity=quantity,
         )
-        if hedge:                          # 헤지 모드에서만 전달
-            order_kwargs["positionSide"] = position_side
+        if FUTURES_MODE_HEDGE:
+            base_kwargs["positionSide"] = position_side
 
-        # ───────────── 진입 ─────────────
-        opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
-        orders = []
+        # ──────── 시장 진입 재시도 루프 ────────
+        # ← LOT_SIZE 정보 미리 확보
+        step   = float(get_tick_size(symbol) ** 0)  # tick → 0.0001 등, **0 = 1
+        exch   = client.futures_exchange_info()
+        prec   = 1
+        for s in exch["symbols"]:
+            if s["symbol"] == symbol.upper():
+                for f in s["filters"]:
+                    if f["filterType"] == "LOT_SIZE":
+                        step = float(f["stepSize"])     # ex) 0.1
+                        prec = abs(int(round(-1 * math.log10(step))))
+                        break
 
-        # 진입
-        entry_res = client.futures_create_order(**order_kwargs)
-        if entry_res["status"] not in ("FILLED", "PARTIALLY_FILLED"):
+        qty_try = round(quantity, prec)
+        for attempt in range(3):
+            try:
+                entry_res = client.futures_create_order(
+                    newOrderRespType="RESULT",   # 즉시 체결 정보 요청
+                    quantity=qty_try,
+                    **base_kwargs
+                )
+            except BinanceAPIException as e:
+                # -2019 = 증거금 부족,  -4164 = notional 부족
+                if e.code in (-2019, -4164) and attempt < 2:
+                    factor   = 0.9 if e.code == -2019 else 1.1
+                    qty_try  = math.floor(qty_try * factor / step) * step
+                    qty_try  = round(qty_try, prec)
+                    reason = "margin" if e.code == -2019 else "notional"
+                    print(f"[RETRY] {reason} → 수량 {qty_try} 재시도({attempt+1}/3)")
+                    continue
+                raise
+
+            # status == NEW → 5초 동안 체결 대기
+            if entry_res["status"] == "NEW":
+                order_id = entry_res["orderId"]
+                t0 = time.time()
+                while time.time() - t0 < 5:
+                    o = client.futures_get_order(symbol=symbol, orderId=order_id)
+                    if float(o["executedQty"]) > 0:
+                        entry_res = o
+                        break
+                    time.sleep(0.2)
+                else:   # 미체결 → 수량 축소 후 재시도
+                    qty_try = math.floor(qty_try * 0.9 / step) * step
+                    qty_try = round(qty_try, prec)
+                    print(f"[RETRY] NEW→미체결 → 수량 {qty_try}")
+                    continue
+            break
+        else:
+            raise ValueError("시장 주문 반복 실패")
+
+        filled_qty = float(entry_res["executedQty"])
+        if filled_qty == 0:
             raise ValueError(f"시장 주문 미체결: {entry_res}")
 
-        # TP
-        orders.append(client.futures_create_order(
-            symbol=symbol,
-            side=opposite_side,
-            type=ORDER_TYPE_LIMIT,
-            timeInForce=TIME_IN_FORCE_GTC,
-            quantity=quantity / 2,
-            price=str(tp),
-            reduceOnly=True,
-            positionSide=position_side
-        ))
+        # ── ① 가격 자릿수 보정 ──────────────────────────
+        tick = get_tick_size(symbol)                # e.g. Decimal('0.0001')
+        tp = float(Decimal(str(tp)).quantize(tick)) # 4 decimals → 2.4544
+        sl = float(Decimal(str(sl)).quantize(tick)) # 4 decimals
 
-        # SL
-        orders.append(client.futures_create_order(
-            symbol=symbol,
-            side=opposite_side,
-            type=ORDER_TYPE_STOP_MARKET,
-            stopPrice=str(sl),
-            quantity=quantity,
-            reduceOnly=True,
-            positionSide=position_side
-        ))
-        print(f"[TP/SL] {symbol} 진입 및 TP/SL 설정 → TP: {tp}, SL: {sl}")
-        send_discord_message(f"[TP/SL] {symbol} 진입 및 TP/SL 설정 → TP: {tp}, SL: {sl}", "binance")
+        # ── ② TP / SL 주문 생성 ─────────────────────────
+        opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
+        half_qty = math.floor((filled_qty / 2) / step) * step
+        half_qty = round(half_qty, prec)
+        tp_kwargs = dict(
+            symbol      = symbol,
+            side        = opposite_side,
+            type        = ORDER_TYPE_LIMIT,
+            timeInForce = TIME_IN_FORCE_GTC,
+            quantity    = half_qty,
+            price       = str(tp),
+            reduceOnly  = True,
+        )
+
+        sl_qty = math.floor(filled_qty / step) * step
+        sl_qty = round(sl_qty, prec)
+        sl_kwargs = dict(
+            symbol      = symbol,
+            side        = opposite_side,
+            type        = ORDER_TYPE_STOP_MARKET,
+            stopPrice   = str(sl),
+            quantity    = sl_qty,
+            reduceOnly  = True,
+        )
+        if FUTURES_MODE_HEDGE:
+            tp_kwargs["positionSide"] = position_side
+            sl_kwargs["positionSide"] = position_side
+
+        client.futures_create_order(**tp_kwargs)
+        client.futures_create_order(**sl_kwargs)
+
+        print(f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp}, SL:{sl}")
+        send_discord_message(
+            f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp}, SL:{sl}", "binance"
+        )
         return True
-    
+
     except Exception as e:
         print(f"[ERROR] TP/SL 포함 주문 실패: {symbol} - {e}")
         send_discord_debug(f"[BINANCE] TP/SL 포함 주문 실패: {symbol} → {e}", "binance")
@@ -154,17 +237,22 @@ def get_open_position(symbol: str):
 
 def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
     try:
+        # ▸ SL 발행 전에도 계정 포지션 모드 확인
+        _ensure_mode_cached()
         side = SIDE_SELL if direction == 'long' else SIDE_BUY
         position_side = 'LONG' if direction == 'long' else 'SHORT'
-        order = client.futures_create_order(
-            symbol=symbol,
-            side=side,
-            type=ORDER_TYPE_STOP_MARKET,
-            stopPrice=str(stop_price),
-            closePosition=True,
-            timeInForce=TIME_IN_FORCE_GTC,
-            positionSide=position_side
+        kwargs = dict(
+            symbol        = symbol,
+            side          = side,
+            type          = ORDER_TYPE_STOP_MARKET,
+            stopPrice     = str(stop_price),
+            closePosition = True,
+            timeInForce   = TIME_IN_FORCE_GTC,
         )
+        if FUTURES_MODE_HEDGE:
+            kwargs["positionSide"] = position_side
+
+        order = client.futures_create_order(**kwargs)
         msg = f"[SL 갱신] {symbol} STOP_MARKET SL 재설정 완료 → {stop_price}"
         print(msg)
         send_discord_debug(msg, "binance")
@@ -232,27 +320,39 @@ def get_tick_size(symbol: str) -> Decimal:
 
 def calculate_quantity(symbol: str, price: float, usdt_balance: float, leverage: int = 10) -> float:
     try:
-        notional = usdt_balance * leverage
+        # 5 % 안전여유를 두어 증거금 부족 오류(code -2019)를 예방
+        notional = usdt_balance * leverage * 0.95
         raw_qty = notional / price
 
-        # stepSize 가져오기
+        # stepSize / notional 최소값 가져오기
         exchange_info = client.futures_exchange_info()
-        step_size = None
+        step_size = min_notional = None
         for s in exchange_info['symbols']:
             if s['symbol'] == symbol.upper():
                 for f in s['filters']:
                     if f['filterType'] == 'LOT_SIZE':
                         step_size = float(f['stepSize'])
-                        break
+                    elif f['filterType'] == 'MIN_NOTIONAL':
+                        min_notional = float(f['notional'])
         if step_size is None:
             print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
             return 0.0
-
+        if min_notional is None:
+            min_notional = 5.0     # 바이낸스 기본
         precision = abs(int(round(-1 * math.log10(step_size))))
+
+        # ───── 명목가(min_notional) 만족하도록 보정 ─────
         steps = math.floor(raw_qty / step_size)
+        notional = steps * step_size * price
+        if notional < min_notional:
+            needed_steps = math.ceil(min_notional / (step_size * price))
+            steps = max(steps, needed_steps)
         qty = round(steps * step_size, precision)
+
+        # 증거금 실제 가능 여부(5 % 여유)를 다시 체크
+        if qty * price > usdt_balance * leverage * 0.95:
+            return 0.0
         return qty
     except Exception as e:
         print(f"[BINANCE] ❌ 수량 계산 실패: {e}")
         return 0.0
-

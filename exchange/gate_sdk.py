@@ -174,15 +174,17 @@ def get_open_position(symbol: str, retry: int = 30, delay: float = 1.0):
     
 # 사용 가능 잔고 조회 (USDT 기준)
 def get_available_balance() -> float:
-    """통화별 배열 반환 형식 대응(USDT 선택)."""
+    """Gate Futures 계정의 사용 가능 USDT 잔고 조회"""
     try:
-        accounts = futures_api.list_futures_accounts(settle="usdt")
-        acc = next(a for a in accounts if a.currency.upper() == "USDT")
-        return float(acc.available)
+        account = futures_api.list_futures_accounts(settle="usdt")  # ✅ 단일 객체 반환
+        return float(account.available)
     except Exception as e:
         print(f"[GATE] 잔고 조회 실패: {e}")
         send_discord_debug(f"[GATE] 잔고 조회 실패 → {e}", "gateio")
     return 0.0
+
+
+
 
 # 수량 소수점 자리수 계산
 def get_quantity_precision(symbol: str) -> int:
@@ -396,7 +398,9 @@ def calculate_quantity_gate(symbol: str, price: float, usdt_balance: float, leve
         raw_qty = notional / price
         contract_symbol = normalize_contract_symbol(symbol)  # ✅ Gate 심볼 포맷 변환
         contract = CONTRACT_CACHE[contract_symbol]
-        step_size = float(contract.size_increment)  # ✅
+        step_size = float(
+            getattr(contract, "size_increment", getattr(contract, "order_size_min", 0.1))
+        )
         precision = get_contract_precision(symbol)
         steps = floor(raw_qty / step_size)
         qty = round(steps * step_size, precision)
@@ -413,11 +417,25 @@ def calculate_quantity_gate(symbol: str, price: float, usdt_balance: float, leve
         send_discord_debug(f"[GATE] ❌ 수량 계산 실패: {e}", "gateio")
         return 0.0
     
-TICK_CACHE = {}
+TICK_CACHE: dict[str, float] = {}
+
+def _contract_tick(c) -> float:
+    """
+    Gate v4 선물 `FuturesContract` 객체는
+    - 신규 필드: `tick_size`
+    - 구버전  : `order_price_round`
+    둘 중 하나만 존재할 수 있어 안전하게 가져온다.
+    """
+    tick = getattr(c, "tick_size", None)
+    if not tick or float(tick) == 0:        # 없거나 0 → fallback
+        tick = getattr(c, "order_price_round", "0.0001")
+    return float(tick)
 
 def get_tick_size_gate(symbol: str) -> float:
     if symbol in TICK_CACHE:
         return TICK_CACHE[symbol]
-    contract = CONTRACT_CACHE[normalize_contract_symbol(symbol)]
-    TICK_CACHE[symbol] = float(contract.tick_size)
+    c = CONTRACT_CACHE[normalize_contract_symbol(symbol)]
+    # SDK 6.98 이후 tick_size → order_price_round 로 변경
+    val = getattr(c, "tick_size", None) or getattr(c, "order_price_round", "0.0001")
+    TICK_CACHE[symbol] = float(val)
     return TICK_CACHE[symbol]
