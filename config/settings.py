@@ -34,19 +34,31 @@ def fetch_max_leverages():
         send_discord_debug(msg, "binance")
         return {}
 
-def fetch_top_futures_symbols(limit=10):
+def fetch_top_futures_symbols(limit: int = 5, overshoot: int = 5):
+    """
+    ▸ 24h 거래량 상위 심볼을 (limit + overshoot) 만큼 가져온다.
+      - exchangeInfo 에서 빠지는 심볼을 제외하고도 최종 10개를 확보하기 위함.
+    """
+    EXCLUDE_SYMBOLS = {"BTCUSDT"}  # ⛔ 제외할 심볼
     try:
-        ticker = requests.get(f"https://fapi.binance.com/fapi/v1/ticker/24hr").json()
+        ticker = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr").json()
         sorted_by_volume = sorted(ticker, key=lambda x: float(x['quoteVolume']), reverse=True)
-        top_symbols = [s['symbol'] for s in sorted_by_volume if s['symbol'].endswith('USDT')][:limit]
+        top_symbols = []
+        for s in sorted_by_volume:
+            symbol = s['symbol']
+            if symbol.endswith('USDT') and symbol not in EXCLUDE_SYMBOLS:
+                top_symbols.append(symbol)
+            if len(top_symbols) >= limit + overshoot:
+                break
         return top_symbols
+    
     except Exception as e:
         msg = f"❌ [BINANCE] 거래량 기준 심볼 조회 실패: {e}"
         print(msg)
         send_discord_debug(msg, "binance")
         return []
 
-def fetch_symbol_info(symbols):
+def fetch_symbol_info(symbols, required: int = 5):
     info = requests.get("https://api.binance.com/api/v3/exchangeInfo").json()
     all_symbols = {s['symbol']: s for s in info['symbols']}
     max_leverages = fetch_max_leverages()
@@ -77,10 +89,12 @@ def fetch_symbol_info(symbols):
             "ltf": "1m" if "_USDT" in symbol else "5m"
         }
 
-    return result
+    # ▸ 부족하면 그대로, 넘치면 앞에서 required 개만 잘라서 반환
+    return dict(list(result.items())[:required])
 
 # 실행 시 자동 로딩
-SYMBOLS = fetch_symbol_info(fetch_top_futures_symbols())
+raw_syms = fetch_top_futures_symbols(limit=5, overshoot=5)
+SYMBOLS  = fetch_symbol_info(raw_syms, required=5)
 
 # ───────────────────────────── 추가 ─────────────────────────────
 # 거래소별 심볼 테이블 분리

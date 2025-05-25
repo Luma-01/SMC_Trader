@@ -2,7 +2,7 @@
 
 import os
 import math
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Optional
 from dotenv import load_dotenv
 from notify.discord import send_discord_debug, send_discord_message
@@ -166,10 +166,35 @@ def place_order_with_tp_sl(
         if filled_qty == 0:
             raise ValueError(f"시장 주문 미체결: {entry_res}")
 
-        # ── ① 가격 자릿수 보정 ──────────────────────────
-        tick = get_tick_size(symbol)                # e.g. Decimal('0.0001')
-        tp = float(Decimal(str(tp)).quantize(tick)) # 4 decimals → 2.4544
-        sl = float(Decimal(str(sl)).quantize(tick)) # 4 decimals
+        # ── ① 가격 자릿수 보정 + Δ≥1 tick 확보 ────────────
+        tick = get_tick_size(symbol)                        # Decimal
+
+        # 기본 라운딩
+        if side == "buy":                                   # LONG
+            tp_dec = Decimal(str(tp)).quantize(tick, ROUND_UP)
+            sl_dec = Decimal(str(sl)).quantize(tick, ROUND_DOWN)
+        else:                                               # SHORT
+            tp_dec = Decimal(str(tp)).quantize(tick, ROUND_DOWN)
+            sl_dec = Decimal(str(sl)).quantize(tick, ROUND_UP)
+
+        # 체결 평균가(혹은 첫 fill 가격) 확보
+        last_price = Decimal(str(
+            entry_res.get("avgPrice") or entry_res["fills"][0]["price"]
+        ))
+
+        # *** 최소 1 tick 차이 보정 ***
+        if side == "buy" and tp_dec - last_price < tick:    # LONG TP ↑
+            tp_dec = last_price + tick
+        if side == "sell" and last_price - tp_dec < tick:   # SHORT TP ↓
+            tp_dec = last_price - tick
+
+        # SL은 STOP_MARKET이므로 배수만 맞으면 충분 → Δ 확인 불필요   # ↑
+
+        tp_str = format(tp_dec, 'f')
+        sl_str = format(sl_dec, 'f')
+
+        # DEBUG
+        print(f"[DEBUG] {symbol} tick={tick}, tp={tp_str}, sl={sl_str}")
 
         # ── ② TP / SL 주문 생성 ─────────────────────────
         opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
@@ -181,7 +206,7 @@ def place_order_with_tp_sl(
             type        = ORDER_TYPE_LIMIT,
             timeInForce = TIME_IN_FORCE_GTC,
             quantity    = half_qty,
-            price       = str(tp),
+            price       = tp_str,
             reduceOnly  = True,
         )
 
@@ -191,7 +216,7 @@ def place_order_with_tp_sl(
             symbol      = symbol,
             side        = opposite_side,
             type        = ORDER_TYPE_STOP_MARKET,
-            stopPrice   = str(sl),
+            stopPrice   = sl_str,
             quantity    = sl_qty,
             reduceOnly  = True,
         )
@@ -202,9 +227,9 @@ def place_order_with_tp_sl(
         client.futures_create_order(**tp_kwargs)
         client.futures_create_order(**sl_kwargs)
 
-        print(f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp}, SL:{sl}")
+        print(f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp_str}, SL:{sl_str}")
         send_discord_message(
-            f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp}, SL:{sl}", "binance"
+            f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp_str}, SL:{sl_str}", "binance"
         )
         return True
 
@@ -241,11 +266,19 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         _ensure_mode_cached()
         side = SIDE_SELL if direction == 'long' else SIDE_BUY
         position_side = 'LONG' if direction == 'long' else 'SHORT'
+        # ▸ SL 가격도 tick 에 맞춰 재정규화
+        tick = get_tick_size(symbol)
+        if direction == 'long':
+            stop_dec = Decimal(str(stop_price)).quantize(tick, rounding=ROUND_DOWN)
+        else:
+            stop_dec = Decimal(str(stop_price)).quantize(tick, rounding=ROUND_UP)
+        stop_str = format(stop_dec, 'f')
+
         kwargs = dict(
             symbol        = symbol,
             side          = side,
             type          = ORDER_TYPE_STOP_MARKET,
-            stopPrice     = str(stop_price),
+            stopPrice     = stop_str,
             closePosition = True,
             timeInForce   = TIME_IN_FORCE_GTC,
         )
@@ -312,7 +345,9 @@ def get_tick_size(symbol: str) -> Decimal:
             if s['symbol'] == symbol.upper():
                 for f in s['filters']:
                     if f['filterType'] == 'PRICE_FILTER':
-                        return Decimal(f['tickSize'])
+                        # ex) "0.01000000" → Decimal('0.01')
+                        # 후행 0 제거(normalize)로 정확한 tick 단위를 확보
+                        return Decimal(f['tickSize']).normalize()
     except Exception as e:
         print(f"[BINANCE] tick_size 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
@@ -320,8 +355,8 @@ def get_tick_size(symbol: str) -> Decimal:
 
 def calculate_quantity(symbol: str, price: float, usdt_balance: float, leverage: int = 10) -> float:
     try:
-        # 5 % 안전여유를 두어 증거금 부족 오류(code -2019)를 예방
-        notional = usdt_balance * leverage * 0.95
+        risk_ratio = 0.3  # ✅ 시드의 30%만 진입
+        notional = usdt_balance * leverage * risk_ratio
         raw_qty = notional / price
 
         # stepSize / notional 최소값 가져오기

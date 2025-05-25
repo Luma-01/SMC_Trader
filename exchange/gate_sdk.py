@@ -4,6 +4,7 @@ import json
 import os
 from time import time, sleep
 from decimal import Decimal
+import requests
 # ------------------------------------------------------------------
 # ❶ 환경/로깅 세팅
 #    - 패키지 트리 밖에서 단독 실행할 때 `notify.discord` 가 없으면
@@ -29,7 +30,7 @@ from gate_api import (
     ApiException,
 )
 from gate_api.models import FuturesPriceTrigger
-
+from gate_api.exceptions import ApiException
 # helper: safe float
 def _f(x):
     try:
@@ -73,24 +74,17 @@ def _ensure_contract_cache():
 _ensure_contract_cache()
 
 def set_leverage(symbol: str, leverage: int):
+    contract_symbol = normalize_contract_symbol(symbol)
     try:
-        contract_symbol = normalize_contract_symbol(symbol)
-        try:
-            # ✅ 단일모드(One-Way)
-            futures_api.update_position_leverage(settle="usdt", contract=contract_symbol, leverage=leverage)
-        except Exception:
-            # ✅ 듀얼모드(헤지)
-            futures_api.update_dual_mode_position_leverage(
-                settle="usdt", contract=contract_symbol, leverage=leverage
-            )
-        print(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}")
-        send_discord_debug(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}", "gateio")
-        return True
-    except Exception as e:
-        msg = f"[GATE] 레버리지 설정 실패: {symbol} → {e}"
-        print(msg)
-        send_discord_debug(msg, "gateio")
-        return False
+        futures_api.update_position_leverage(settle="usdt", contract=contract_symbol, leverage=leverage)
+    except ApiException as e:
+        if "dual mode" in str(e).lower():
+            futures_api.update_dual_mode_position_leverage(settle="usdt", contract=contract_symbol, leverage=leverage)
+        else:
+            raise e
+    print(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}")
+    send_discord_debug(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}", "gateio")
+    return True
 
 def place_order(symbol: str, side: str, size: float, leverage: int = 20):
     try:
@@ -118,59 +112,54 @@ def place_order(symbol: str, side: str, size: float, leverage: int = 20):
         send_discord_debug(msg, "gateio")
         return None
 
-def get_open_position(symbol: str, retry: int = 30, delay: float = 1.0):
-    """단일모드 + 듀얼모드 계정 모두 지원"""
+def get_open_position(symbol: str, max_wait: float = 15.0, delay: float = 0.5):
     contract_symbol = normalize_contract_symbol(symbol)
-    for attempt in range(retry):
+    t0 = time()
+
+    while time() - t0 < max_wait:
         try:
+            # 단일 포지션 조회
             pos = futures_api.get_position(settle="usdt", contract=contract_symbol)
-            if pos:
-                size = _f(pos.size)
-                entry = _f(pos.entry_price)
-                if abs(size) > 0 and entry > 0:
-                    print(f"[INFO] 단일 포지션 확인 성공: size={size}, entry={entry}")
-                    return {
-                        "symbol": symbol,
-                        "direction": "long" if size > 0 else "short",
-                        "entry": entry,
-                        "size": abs(size),
-                    }
+            size = _f(pos.size)
+            entry = _f(pos.entry_price)
+            mode = getattr(pos, "mode", "").lower()
+            if size != 0 and entry > 0:
+                direction = "long" if size > 0 else "short"
+                print(f"[INFO] 단일 포지션 확인: mode={mode}, size={size}, entry={entry}")
+                return {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry": entry,
+                    "size": abs(size),
+                }
         except Exception as e:
-            print(f"[RETRY-{attempt+1}] get_position 오류: {e}")
+            print(f"[RETRY] get_position 실패: {e}")
 
         try:
+            # 듀얼 포지션 탐색
             all_pos = futures_api.list_positions(settle="usdt", holding=True)
             for p in all_pos:
                 if p.contract != contract_symbol:
                     continue
-                sz = _f(p.size)
-                entry_price = _f(p.entry_price)
-                d_side = (getattr(p, "dual_side", "") or "").lower()
-                if sz != 0:
-                    if entry_price > 0 and d_side in ("long", "short"):
-                        print(f"[INFO] 듀얼 포지션 확인 성공: side={d_side}, size={sz}, entry={entry_price}")
-                        return {
-                            "symbol": symbol,
-                            "direction": "long" if d_side == "long" else "short",
-                            "entry": entry_price,
-                            "size": sz,
-                        }
-                    elif attempt >= 10:
-                        # ⏱ fallback: entry_price가 0이어도 포지션 유지되면 리턴
-                        print(f"[WARN] 듀얼 포지션 fallback: entry=0, size={sz}, attempt={attempt}")
-                        return {
-                            "symbol": symbol,
-                            "direction": "long" if d_side == "long" else "short",
-                            "entry": 0.0,
-                            "size": sz,
-                        }
+                size = _f(p.size)
+                entry = _f(p.entry_price)
+                mode = (getattr(p, "mode", "") or getattr(p, "dual_side", "")).lower()
+                if size and entry and mode:
+                    direction = "long" if "long" in mode else "short"
+                    print(f"[INFO] 듀얼 포지션 확인: mode={mode}, size={size}, entry={entry}")
+                    return {
+                        "symbol": symbol,
+                        "direction": direction,
+                        "entry": entry,
+                        "size": abs(size),
+                    }
         except Exception as e:
-            print(f"[RETRY-{attempt+1}] list_positions 오류: {e}")
+            print(f"[RETRY] list_positions 오류: {e}")
 
-        if attempt == 0:
-            sleep(1.0)
         sleep(delay)
 
+    print(f"[TIMEOUT] 포지션 entry_price 확인 실패: {symbol}")
+    return None
     
 # 사용 가능 잔고 조회 (USDT 기준)
 def get_available_balance() -> float:
@@ -182,9 +171,6 @@ def get_available_balance() -> float:
         print(f"[GATE] 잔고 조회 실패: {e}")
         send_discord_debug(f"[GATE] 잔고 조회 실패 → {e}", "gateio")
     return 0.0
-
-
-
 
 # 수량 소수점 자리수 계산
 def get_quantity_precision(symbol: str) -> int:
@@ -244,25 +230,30 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
             print(f"[WAIT] 포지션 반영 대기 중... {symbol}")
             sleep(1)
 
-        if not pos:
-            print(f"[WARNING] 포지션 확인 실패, 주문 응답 기반 TP/SL 생성 시도")
-            confirmed_size = abs(float(entry_res.size or size))
-            entry_price = float(entry_res.fill_price or 0.0)
-            direction = "long" if confirmed_size > 0 else "short"
-            print(f"[INFO] fallback (no pos): fill_price={entry_price} 사용")
-        elif pos.get("entry", 0.0) == 0.0:
-            print(f"[WARNING] entry=0, 주문 fill_price 기반 TP/SL 계산")
-            confirmed_size = abs(float(pos.get("size", size)))
-            entry_price = float(entry_res.fill_price or 0.0)
-            direction = pos["direction"]
-            print(f"[INFO] fallback (entry=0): fill_price={entry_price}, direction={direction}")
-        else:
-            confirmed_size = abs(float(pos.get("size", size)))
-            entry_price = float(pos["entry"])
-            direction = pos["direction"]
+        if not pos or pos.get("entry", 0.0) == 0.0:
+            raise ValueError(f"❌ 포지션 조회 실패 또는 entry=0 → TP/SL 설정 중단: {symbol}")
+        confirmed_size = abs(float(pos.get("size", size)))
+        entry_price = float(pos["entry"])
+        direction = pos["direction"]
 
-        if not entry_price:
-            raise ValueError("❌ fill_price 없음 → TP/SL 계산 불가")
+        # 마크 가격 실시간 조회
+        mark_url = f"https://fx-api.gateio.ws/api/v4/futures/usdt/mark_price/{contract}"
+        mark_resp = requests.get(mark_url, timeout=3).json()
+        mark_price = float(mark_resp["mark_price"]) if "mark_price" in mark_resp else entry_price
+
+        if not entry_price or not mark_price:
+            raise ValueError("❌ 가격 정보 부족 → TP/SL 계산 불가")
+        
+        # ✅ SL 보정 (마크가격·엔트리 기준 안전 확보)
+        min_diff = float(tick)
+        if direction == "long":
+            sl = min(sl, entry_price - min_diff, mark_price - min_diff)
+            if sl >= entry_price or sl >= mark_price:
+                raise ValueError(f"❌ SL 오류 (롱) → SL={sl}, Entry={entry_price}, Mark={mark_price}")
+        elif direction == "short":
+            sl = max(sl, entry_price + min_diff, mark_price + min_diff)
+            if sl <= entry_price or sl <= mark_price:
+                raise ValueError(f"❌ SL 오류 (숏) → SL={sl}, Entry={entry_price}, Mark={mark_price}")
 
         # SL/TP 수량 계산
         step_size = float(getattr(CONTRACT_CACHE[contract], "size_increment", getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
@@ -285,19 +276,26 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         if not tp_res:
             raise Exception("TP 주문 실패")
 
-        # SL 트리거 주문 구성 (gate-api 6.97.2 대응)
+        # SL 트리거 주문 구성 ─────────────────────────────
+        sl_price = sl * (0.999 if direction == "long" else 1.001)
+        sl_price = float(Decimal(str(sl_price)).quantize(tick))
+
+        # ▸ 롱 : 가격이 내려가면 발동(≤) → rule=2  
+        # ▸ 숏 : 가격이 올라가면 발동(≥) → rule=1
+        sl_rule = 2 if direction == "long" else 1
+
         sl_trigger = FuturesPriceTriggeredOrder(
             trigger=FuturesPriceTrigger(
                 price=str(sl),
-                rule=2,
+                rule=sl_rule,
                 price_type=1,
                 expiration=86400
             ),
             initial=FuturesOrder(
                 contract=contract,
                 size=int(-sl_size) if side == "buy" else int(sl_size),
-                price="0",
-                tif="ioc",
+                price=str(sl_price),
+                tif="gtc",
                 reduce_only=True,
                 text="t-SL-SMC"
             )
@@ -391,11 +389,23 @@ def get_tick_size(symbol: str) -> Decimal:
         send_discord_debug(f"[GATE] tick_size 조회 실패 → {e}", "gateio")
     return Decimal("0.0001")
 
-def calculate_quantity_gate(symbol: str, price: float, usdt_balance: float, leverage: int = 10) -> float:
+def calculate_quantity_gate(
+    symbol: str,
+    price: float,
+    usdt_balance: float,
+    leverage: int = 10,
+    risk_ratio: float = 0.30,
+) -> float:
+    """
+    ▸ `risk_ratio` = 사용할 증거금 비율 (예: 0.30 → 30 %)
+    ▸ *증거금* = (usdt_balance × risk_ratio)  
+      ⇒ 목표 *명목가* = 증거금 × leverage
+    """
     try:
         from math import floor
-        notional = usdt_balance * leverage
-        raw_qty = notional / price
+        margin_cap   = usdt_balance * risk_ratio          # 사용할 최대 증거금
+        target_notional = margin_cap * leverage            # 목표 명목가
+        raw_qty      = target_notional / price
         contract_symbol = normalize_contract_symbol(symbol)  # ✅ Gate 심볼 포맷 변환
         contract = CONTRACT_CACHE[contract_symbol]
         step_size = float(
@@ -403,15 +413,20 @@ def calculate_quantity_gate(symbol: str, price: float, usdt_balance: float, leve
         )
         precision = get_contract_precision(symbol)
         steps = floor(raw_qty / step_size)
-        qty = round(steps * step_size, precision)
+        max_steps = floor((margin_cap * leverage) / (price * step_size))
+        steps = max(1, min(steps, max_steps - 1))  # 초과 방지용 1단계 여유
+        qty   = round(steps * step_size, precision)
 
         if qty < step_size:
             print(f"[GATE] 최소 주문 수량 미달: 계산된 qty={qty}, 최소={step_size}")
             return 0.0
 
-        print(f"[GATE] 수량 계산 → raw_qty={raw_qty}, steps={steps}, qty={qty}")
-
+        print(
+            f"[GATE] 수량 계산 → raw_qty={raw_qty}, steps={steps}, "
+            f"qty={qty}, max_steps={max_steps}, risk_cap={margin_cap}"
+        )
         return qty
+    
     except Exception as e:
         print(f"[GATE] ❌ 수량 계산 실패: {e}")
         send_discord_debug(f"[GATE] ❌ 수량 계산 실패: {e}", "gateio")

@@ -4,6 +4,7 @@ import sys
 import asyncio
 from decimal import Decimal                # ★ 추가 import
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -20,6 +21,7 @@ from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
+from exchange.router import get_open_position
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
 from exchange.binance_api import get_tick_size, calculate_quantity
 from exchange.binance_api import (
@@ -37,6 +39,7 @@ from exchange.gate_sdk import (
 )
 from notify.discord import send_discord_debug, send_discord_message
 
+load_dotenv()
 pm = PositionManager()
 
 # ───────────────────────────── 헬퍼 ─────────────────────────────
@@ -46,7 +49,16 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     meta   : 최소 {"leverage": …}.  비어 있으면 DEFAULT_LEVERAGE 사용
     """
     leverage = meta.get("leverage", DEFAULT_LEVERAGE)
-
+    # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
+    if pm.has_position(symbol):
+        print(f"[SKIP] 내부 포지션 중복 방지 → {symbol}")
+        return
+    # 실시간 확인: Binance + Gate 모두 대응
+    live_pos = get_open_position(symbol)
+    if live_pos and abs(live_pos.get("entry", 0)) > 0:
+        print(f"[SKIP] 실시간 포지션 확인됨 → {symbol}")
+        return
+    
     try:
         # ▸ candle dict 는 항상 Binance 포맷(BTCUSDT) 키 사용
         is_gate = "_USDT" in symbol
@@ -57,8 +69,14 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         if df_htf is None or df_ltf is None or len(df_htf) < 30 or len(df_ltf) < 30:
             return
 
-        htf = pd.DataFrame(df_htf); htf.attrs["tf"] = htf_tf
+        # ▸ 심볼·타임프레임 메타데이터 주입
+        htf = pd.DataFrame(df_htf)
+        htf.attrs["symbol"] = base_sym.upper()
+        htf.attrs["tf"]     = htf_tf
+
         ltf = pd.DataFrame(df_ltf)
+        ltf.attrs["symbol"] = base_sym.upper()
+        ltf.attrs["tf"]     = ltf_tf
 
         htf_struct = detect_structure(htf)
         if (
@@ -68,11 +86,14 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         ):
             return
 
-        if is_gate:
-            tick_size = Decimal(str(get_tick_size_gate(symbol)))
-        else:
-            tick_size = get_tick_size(base_sym)
-        signal, direction = is_iof_entry(htf_struct, ltf, tick_size)
+        tick_size = (
+            Decimal(str(get_tick_size_gate(symbol)))
+            if is_gate else
+            get_tick_size(base_sym)
+        )
+
+        # ⬇️ htf 전체 DataFrame을 그대로 넘겨야 attrs 를 활용할 수 있음
+        signal, direction = is_iof_entry(htf, ltf, tick_size)
         if not signal or direction is None:
             return
 
@@ -81,7 +102,11 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         order_ok = False
         if is_gate:
-            qty = calculate_quantity_gate(symbol, entry, gate_balance(), leverage)
+            balance = gate_balance()
+            risked_balance = balance * 0.3
+            qty = calculate_quantity_gate(symbol, entry, risked_balance, leverage)
+            print(f"[GATE] 잔고={balance:.2f}, 위험노출={risked_balance:.2f}, 수량={qty}")
+            
             if qty <= 0:
                 return
             order_ok = gate_order(
@@ -117,7 +142,7 @@ def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
     else:
         sl = entry * (1 + buffer)
         tp = entry - (sl - entry) * rr
-    return sl, tp
+    return float(sl), float(tp)
 
 def initialize():
     print("🚀 [INIT] 초기 세팅 시작")
@@ -128,11 +153,10 @@ def initialize():
     for symbol, data in SYMBOLS.items():
         try:
             pos = binance_pos(symbol)
-            if isinstance(pos, dict) and 'entry' in pos and 'direction' in pos:
+            if pos and 'entry' in pos and 'direction' in pos:
                 sl, tp = calculate_sl_tp(pos['entry'], pos['direction'], SL_BUFFER, RR)
                 pm.init_position(symbol, pos['direction'], pos['entry'], sl, tp)
-            else:
-                failed_positions.append(symbol)
+            # 포지션이 없으면 Quiet 패스
         except Exception:
             failed_positions.append(symbol)
         try:

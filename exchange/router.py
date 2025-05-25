@@ -1,7 +1,8 @@
 # exchange/router.py
 
 from exchange.binance_api import update_stop_loss_order as binance_sl
-# Gate 전용 함수 import
+from exchange.binance_api import get_open_position as binance_pos
+from exchange.gate_sdk import get_open_position as gate_pos
 from exchange.gate_sdk import (
     update_stop_loss_order as gate_sl,
     normalize_contract_symbol as to_gate,
@@ -28,3 +29,12 @@ def cancel_order(symbol: str, order_id: int):
     else:
         from exchange.binance_api import cancel_order as binance_cancel_order
         return binance_cancel_order(symbol, order_id)
+
+def get_open_position(symbol: str):
+    """
+    실시간 포지션 확인 라우터
+    - symbol: Binance (e.g., BTCUSDT), Gate (e.g., BTC_USDT)
+    """
+    if "_USDT" in symbol:
+        return gate_pos(symbol)
+    return binance_pos(symbol)
