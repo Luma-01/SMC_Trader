@@ -7,9 +7,15 @@ from exchange.gate_sdk import (
     update_stop_loss_order as gate_sl,
     normalize_contract_symbol as to_gate,
 )
-# Gate 심볼 집합(BTC_USDT 형식) 생성
+# Gate 심볼 집합(BTC_USDT 형식) 생성 (미지원 심볼 스킵)
 from config.settings import SYMBOLS_GATE
-GATE_SET = {to_gate(sym) for sym in SYMBOLS_GATE}
+GATE_SET = set()
+for sym in SYMBOLS_GATE:
+    try:
+        GATE_SET.add(to_gate(sym))
+    except ValueError as e:
+        # 콘솔에 경고. 필요시 send_discord_debug 로 대체 가능
+        print(f"[WARN] Gate 심볼 변환 실패, 스킵: {sym} ({e})")
 
 def update_stop_loss(symbol: str, direction: str, stop_price: float):
     """
