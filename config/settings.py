@@ -34,7 +34,7 @@ def fetch_max_leverages():
         send_discord_debug(msg, "binance")
         return {}
 
-def fetch_top_futures_symbols(limit: int = 5, overshoot: int = 5):
+def fetch_top_futures_symbols(limit: int = 5, overshoot: int = 10):
     """
     ▸ 24h 거래량 상위 심볼을 (limit + overshoot) 만큼 가져온다.
       - exchangeInfo 에서 빠지는 심볼을 제외하고도 최종 10개를 확보하기 위함.
@@ -93,7 +93,7 @@ def fetch_symbol_info(symbols, required: int = 5):
     return dict(list(result.items())[:required])
 
 # 실행 시 자동 로딩
-raw_syms = fetch_top_futures_symbols(limit=5, overshoot=5)
+raw_syms = fetch_top_futures_symbols(limit=5, overshoot=10)
 SYMBOLS  = fetch_symbol_info(raw_syms, required=5)
 
 # ───────────────────────────── 추가 ─────────────────────────────

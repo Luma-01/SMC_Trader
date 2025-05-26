@@ -133,6 +133,10 @@ def get_open_position(symbol: str, max_wait: float = 15.0, delay: float = 0.5):
                     "size": abs(size),
                 }
         except Exception as e:
+            # 포지션이 없으면 바로 중단
+            if e.status == 400 and "POSITION_NOT_FOUND" in e.body:
+                print(f"[INFO] 포지션 없음 → 즉시 종료: {symbol}")
+                return None
             print(f"[RETRY] get_position 실패: {e}")
 
         try:
@@ -276,37 +280,14 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         if not tp_res:
             raise Exception("TP 주문 실패")
 
-        # SL 트리거 주문 구성 ─────────────────────────────
-        sl_price = sl * (0.999 if direction == "long" else 1.001)
-        sl_price = float(Decimal(str(sl_price)).quantize(tick))
-
-        # ▸ 롱 : 가격이 내려가면 발동(≤) → rule=2  
-        # ▸ 숏 : 가격이 올라가면 발동(≥) → rule=1
-        sl_rule = 2 if direction == "long" else 1
-
-        sl_trigger = FuturesPriceTriggeredOrder(
-            trigger=FuturesPriceTrigger(
-                price=str(sl),
-                rule=sl_rule,
-                price_type=1,
-                expiration=86400
-            ),
-            initial=FuturesOrder(
-                contract=contract,
-                size=int(-sl_size) if side == "buy" else int(sl_size),
-                price=str(sl_price),
-                tif="gtc",
-                reduce_only=True,
-                text="t-SL-SMC"
-            )
-        )
-
-        sl_res = futures_api.create_price_triggered_order(
-            settle="usdt", futures_price_triggered_order=sl_trigger
-        )
-
-        if not sl_res:
-            raise Exception("SL 주문 실패")
+        # ─ SL 트리거 주문 구성은 main.py → update_stop_loss() 에서 일괄 관리합니다.
+        # 따라서 이곳의 SL 생성 로직은 제거/주석 처리합니다.
+        # sl_price = sl * (0.999 if direction == "long" else 1.001)
+        # sl_price = float(Decimal(str(sl_price)).quantize(tick))
+        # sl_rule  = 2 if direction == "long" else 1
+        # sl_trigger = FuturesPriceTriggeredOrder(...)
+        # sl_res = futures_api.create_price_triggered_order(...)
+        # if not sl_res: raise Exception("SL 주문 실패")
 
         msg = f"[TP/SL] {symbol} 진입 및 TP/SL 설정 완료 → TP: {tp}, SL: {sl}"
         print(msg)
@@ -330,7 +311,12 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         tick = get_tick_size(symbol)
         normalized_stop = float(Decimal(str(stop_price)).quantize(tick))
 
-        # ✅ SL 갱신(취소 → 재생성)
+        # ✅ SL 갱신(기존 트리거 주문 취소 → 새 트리거 주문 생성)
+        # (필요 시, 아래 리스트/취소 로직을 넣으세요)
+        # old_orders = futures_api.list_price_triggered_orders(settle="usdt")
+        # for o in old_orders:
+        #     if o.contract == contract:
+        #         futures_api.cancel_price_triggered_order(settle="usdt", order_id=o.id)
         trigger = FuturesPriceTriggeredOrder()
         trigger.contract      = contract
         trigger.size          = int(size) if direction == "long" else int(-size)

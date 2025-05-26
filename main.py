@@ -21,7 +21,8 @@ from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
-from exchange.router import get_open_position
+from core.ob import detect_ob
+from exchange.router import get_open_position, update_stop_loss
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
 from exchange.binance_api import get_tick_size, calculate_quantity
 from exchange.binance_api import (
@@ -97,15 +98,35 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         if not signal or direction is None:
             return
 
-        entry = ltf["close"].iloc[-1]
-        sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
+        entry = float(ltf["close"].iloc[-1])
+        # Zone 기반 SL/TP 계산 (OB 사용)
+        zone = None
+        # 최근 OB 중 현재 방향과 일치하는 마지막 zone 선택
+        for ob in reversed(detect_ob(ltf)):
+            if ob["type"].lower() == direction:
+                zone = ob
+                break
+        if zone:
+            # buffer_value = SL_BUFFER 틱 * tick_size
+            buffer_value = Decimal(str(SL_BUFFER)) * tick_size
+            entry_dec = Decimal(str(entry))
+            if direction == "long":
+                zone_low = Decimal(str(zone["low"])).quantize(tick_size)
+                sl_dec = (zone_low - buffer_value).quantize(tick_size)
+                tp_dec = (entry_dec + (entry_dec - sl_dec) * Decimal(str(RR))).quantize(tick_size)
+            else:
+                zone_high = Decimal(str(zone["high"])).quantize(tick_size)
+                sl_dec = (zone_high + buffer_value).quantize(tick_size)
+                tp_dec = (entry_dec - (sl_dec - entry_dec) * Decimal(str(RR))).quantize(tick_size)
+            sl, tp = float(sl_dec), float(tp_dec)
+        else:
+            sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
 
         order_ok = False
         if is_gate:
             balance = gate_balance()
-            risked_balance = balance * 0.3
-            qty = calculate_quantity_gate(symbol, entry, risked_balance, leverage)
-            print(f"[GATE] 잔고={balance:.2f}, 위험노출={risked_balance:.2f}, 수량={qty}")
+            qty = calculate_quantity_gate(symbol, entry, balance, leverage)
+            print(f"[GATE] 잔고={balance:.2f}, 수량={qty}")
             
             if qty <= 0:
                 return
@@ -126,6 +147,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         if order_ok:
             pm.enter(symbol, direction, entry, sl, tp)
+            # ▶ 초기 SL 주문 (진입 근거 캔들 하단)
+            update_stop_loss(symbol, direction, sl)
         else:
             print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
             send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")

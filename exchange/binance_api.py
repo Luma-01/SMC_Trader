@@ -224,8 +224,11 @@ def place_order_with_tp_sl(
             tp_kwargs["positionSide"] = position_side
             sl_kwargs["positionSide"] = position_side
 
+        # TP 지정가 주문
         client.futures_create_order(**tp_kwargs)
-        client.futures_create_order(**sl_kwargs)
+        # SL 주문은 update_stop_loss_order() 에서 일괄 관리하므로
+        # 이 지점에서는 SL 생성 로직을 비활성화합니다.
+        # client.futures_create_order(**sl_kwargs)
 
         print(f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp_str}, SL:{sl_str}")
         send_discord_message(
@@ -285,6 +288,18 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         if FUTURES_MODE_HEDGE:
             kwargs["positionSide"] = position_side
 
+        # ── ① 기존 STOP_MARKET SL 주문 취소 ─────────────────────────────
+        try:
+            open_orders = client.futures_get_open_orders(symbol=symbol)
+            for o in open_orders:
+                if o['type'] == ORDER_TYPE_STOP_MARKET and o.get('reduceOnly'):
+                    client.futures_cancel_order(symbol=symbol, orderId=o['orderId'])
+                    print(f"[CANCEL] {symbol} SL 주문 취소됨 (ID: {o['orderId']})")
+        except Exception as e:
+            print(f"[WARN] SL 취소 실패: {e}")
+            send_discord_debug(f"[BINANCE] SL 취소 실패 → {e}", "binance")
+
+        # ── ② 새 SL 주문 생성 ────────────────────────────────────────────
         order = client.futures_create_order(**kwargs)
         msg = f"[SL 갱신] {symbol} STOP_MARKET SL 재설정 완료 → {stop_price}"
         print(msg)
