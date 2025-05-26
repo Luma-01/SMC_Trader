@@ -34,7 +34,15 @@ def fetch_max_leverages():
         send_discord_debug(msg, "binance")
         return {}
 
-def fetch_top_futures_symbols(limit: int = 5, overshoot: int = 10):
+# ─── 상위 심볼 개수 & 오버슛 비율 상수 ─────────────────────────────
+TOP_SYMBOL_LIMIT  = 10           # 최종적으로 사용할 상위 N개 심볼
+OVERSHOOT_FACTOR = 2            # limit * OVERSHOOT_FACTOR 만큼 여유분 확보
+# ──────────────────────────────────────────────────────────────────
+
+def fetch_top_futures_symbols(
+    limit: int    = TOP_SYMBOL_LIMIT,
+    overshoot: int = TOP_SYMBOL_LIMIT * OVERSHOOT_FACTOR
+):
     """
     ▸ 24h 거래량 상위 심볼을 (limit + overshoot) 만큼 가져온다.
       - exchangeInfo 에서 빠지는 심볼을 제외하고도 최종 10개를 확보하기 위함.
@@ -58,7 +66,10 @@ def fetch_top_futures_symbols(limit: int = 5, overshoot: int = 10):
         send_discord_debug(msg, "binance")
         return []
 
-def fetch_symbol_info(symbols, required: int = 5):
+def fetch_symbol_info(
+    symbols,
+    required: int = TOP_SYMBOL_LIMIT
+):
     info = requests.get("https://api.binance.com/api/v3/exchangeInfo").json()
     all_symbols = {s['symbol']: s for s in info['symbols']}
     max_leverages = fetch_max_leverages()
@@ -92,9 +103,18 @@ def fetch_symbol_info(symbols, required: int = 5):
     # ▸ 부족하면 그대로, 넘치면 앞에서 required 개만 잘라서 반환
     return dict(list(result.items())[:required])
 
+# ─── 상위 심볼 한 번에 뽑아주는 래퍼 ───────────────────────────────
+def fetch_top_symbols(limit: int = TOP_SYMBOL_LIMIT,
+                      overshoot_factor: int = OVERSHOOT_FACTOR):
+    raw = fetch_top_futures_symbols(
+        limit=limit,
+        overshoot=limit * overshoot_factor
+    )
+    return fetch_symbol_info(raw, required=limit)
+# ──────────────────────────────────────────────────────────────────
+
 # 실행 시 자동 로딩
-raw_syms = fetch_top_futures_symbols(limit=5, overshoot=10)
-SYMBOLS  = fetch_symbol_info(raw_syms, required=5)
+SYMBOLS = fetch_top_symbols()
 
 # ───────────────────────────── 추가 ─────────────────────────────
 # 거래소별 심볼 테이블 분리
