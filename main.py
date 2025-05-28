@@ -12,10 +12,11 @@ import pandas as pd
 from core.structure import detect_structure
 from config.settings import (
     SYMBOLS,
-    SYMBOLS_GATE,          # ★ 추가
+    SYMBOLS_GATE,
     RR,
     SL_BUFFER,
-    DEFAULT_LEVERAGE,      # ★ 추가
+    DEFAULT_LEVERAGE,
+    ENABLE_GATE,          # ★ 추가
 )
 from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
@@ -31,13 +32,17 @@ from exchange.binance_api import (
     get_available_balance,
     get_open_position as binance_pos,   # ★ 복원
 )
-from exchange.gate_sdk import (
-    place_order_with_tp_sl as gate_order,
-    get_available_balance as gate_balance,
-    calculate_quantity_gate,
-    get_tick_size_gate,
-    normalize_contract_symbol as to_gate,      # ★ 이미 추가
-)
+# Gate.io 연동은 ENABLE_GATE 가 True 일 때만 임포트
+if ENABLE_GATE:
+    from exchange.gate_sdk import (
+        place_order_with_tp_sl as gate_order_with_tp_sl,
+        get_open_position as gate_pos,
+        set_leverage as gate_set_leverage,
+        get_available_balance as gate_get_balance,
+        get_tick_size as get_tick_size_gate,
+        calculate_quantity as calculate_quantity_gate,
+        to_gate_symbol as to_gate,        # ← 실제 함수명이 다르면 맞춰 주세요
+    )
 from notify.discord import send_discord_debug, send_discord_message
 
 load_dotenv()
@@ -124,13 +129,13 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         order_ok = False
         if is_gate:
-            balance = gate_balance()
+            balance = gate_get_balance()
             qty = calculate_quantity_gate(symbol, entry, balance, leverage)
             print(f"[GATE] 잔고={balance:.2f}, 수량={qty}")
             
             if qty <= 0:
                 return
-            order_ok = gate_order(
+            order_ok = gate_order_with_tp_sl(
                 symbol,
                 "buy" if direction == "long" else "sell",
                 qty, tp, sl, leverage
@@ -207,10 +212,15 @@ async def strategy_loop():
         for symbol, meta in SYMBOLS.items():
             await handle_pair(symbol, meta, "1h", "5m")
 
-        # ───── Gate.io 단타 15m→1m ─────
-        for symbol in SYMBOLS_GATE:
-            # candles·tick_size 조회는 BTCUSDT, 주문은 BTC_USDT
-            await handle_pair(to_gate(symbol), {}, "15m", "1m")
+        # ───── Gate.io 단타 15m→1m (듀얼 모드 전용) ─────
+        if ENABLE_GATE:
+            for symbol in SYMBOLS_GATE:
+                try:
+                    gate_sym = to_gate(symbol)
+                except ValueError as e:
+                    print(f"[WARN] Gate 미지원 심볼 제외: {symbol} ({e})")
+                    continue
+                await handle_pair(gate_sym, {}, "15m", "1m")
 # ──────────────────────────────────────────────────────────────
 
         await asyncio.sleep(5)
@@ -233,6 +243,9 @@ def force_entry(symbol, side, qty_override=None):
     """
     # 현재 마크가격 조회 (Gate·Binance 모두 지원)
     if symbol.endswith("_USDT"):
+        if not ENABLE_GATE:
+            print("❌ Gate.io 기능이 비활성화 상태입니다 (ENABLE_GATE=False)")
+            return
         import requests, json, time, requests
 
         def gate_mark(s: str) -> float:
@@ -267,7 +280,8 @@ def force_entry(symbol, side, qty_override=None):
     else:
         # 자동 산출
         if symbol.endswith("_USDT"):      # Gate 선물
-            size = calculate_quantity_gate(symbol, price, gate_balance(), leverage)
+            # Gate 잔고 조회 함수명 통일
+            size = calculate_quantity_gate(symbol, price, gate_get_balance(), leverage)
         else:                             # Binance 선물
             set_leverage(symbol, leverage)      # 미리 적용
             size = calculate_quantity(symbol, price, get_available_balance(), leverage)
@@ -286,7 +300,8 @@ def force_entry(symbol, side, qty_override=None):
     print(f"🚀 강제 진입 테스트: {symbol}, side={side}, size={size}, TP={tp}, SL={sl}")
     
     if symbol.endswith("_USDT"):          # Gate 선물
-        ok = gate_order(symbol, side, size, tp, sl, leverage)
+        # Gate 주문 함수는 gate_order_with_tp_sl 로 통일
+        ok = gate_order_with_tp_sl(symbol, side, size, tp, sl, leverage)
     else:                                 # Binance 선물 심볼
         ok = binance_order_with_tp_sl(symbol, side, size, tp, sl)
 

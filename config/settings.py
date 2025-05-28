@@ -5,6 +5,7 @@ from binance.client import Client
 from dotenv import load_dotenv
 import os
 from notify.discord import send_discord_debug
+# Gate 관련 모듈은 ENABLE_GATE 가 True 인 경우에만 import
 
 load_dotenv()
 api_key = os.getenv("BINANCE_API_KEY")
@@ -18,8 +19,14 @@ SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
 TIMEFRAMES = ['1m', '5m', '15m', '1h']
 DEFAULT_LEVERAGE = 20
-
 CUSTOM_LEVERAGES = {}
+
+# ────────────────────────────────────────────────
+# Gate.io 통합 ON/OFF 스위치
+#   False : Binance 전용 모드
+#   True  : Binance + Gate.io 듀얼 모드
+# ────────────────────────────────────────────────
+ENABLE_GATE = False
 
 def fetch_max_leverages():
     try:
@@ -120,6 +127,15 @@ SYMBOLS = fetch_top_symbols()
 # 거래소별 심볼 테이블 분리
 #  - Binance : BTCUSDT 형식 그대로 사용
 #  - Gate.io : 주문 직전에만 BTC_USDT 로 변환하므로 여기선 그대로 둔다
-SYMBOLS_BINANCE = SYMBOLS                       # dict 그대로 참조
-SYMBOLS_GATE    = list(SYMBOLS.keys())          # ▶ 리스트면 set·len 등 사용 쉬움
+SYMBOLS_BINANCE = SYMBOLS       # 그대로 사용
+SYMBOLS_GATE = []               # Gate 지원 심볼 (듀얼 모드에서만 채움)
+
+if ENABLE_GATE:
+    from exchange.gate_sdk import normalize_contract_symbol
+    for sym in SYMBOLS:
+        try:
+            normalize_contract_symbol(sym)
+            SYMBOLS_GATE.append(sym)
+        except ValueError:
+            print(f"[WARN] Gate 미지원 심볼 제외 (settings): {sym}")
 # ───────────────────────────────────────────────────────────────

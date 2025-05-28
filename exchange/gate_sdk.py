@@ -29,7 +29,6 @@ from gate_api import (
     FuturesPriceTriggeredOrder,   # ✅ 선물용 트리거 주문 모델
     ApiException,
 )
-from gate_api.models import FuturesPriceTrigger
 from gate_api.exceptions import ApiException
 # helper: safe float
 def _f(x):
@@ -311,24 +310,33 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         tick = get_tick_size(symbol)
         normalized_stop = float(Decimal(str(stop_price)).quantize(tick))
 
-        # ✅ SL 갱신(기존 트리거 주문 취소 → 새 트리거 주문 생성)
-        # (필요 시, 아래 리스트/취소 로직을 넣으세요)
-        # old_orders = futures_api.list_price_triggered_orders(settle="usdt")
-        # for o in old_orders:
-        #     if o.contract == contract:
-        #         futures_api.cancel_price_triggered_order(settle="usdt", order_id=o.id)
-        trigger = FuturesPriceTriggeredOrder()
-        trigger.contract      = contract
-        trigger.size          = int(size) if direction == "long" else int(-size)
-        trigger.trigger_price = str(normalized_stop)
-        trigger.price_type    = 1
-        trigger.close         = True
-        trigger.text          = "t-SL-UPDATE"
-        trigger.order_price   = "0"
-        trigger.tif           = "ioc"
-        trigger.reduce_only   = True
+        # ──────────────────────────────────────────────
+        #  Gate v4 SL 트리거 주문
+        #   · initial      : False  (갱신)
+        #   · trigger_price: 필수
+        #   · price_type   : 1 = MarkPrice  (2 = LastPrice)
+        # ──────────────────────────────────────────────
+        trigger = FuturesPriceTriggeredOrder(
+            initial=False,
+            trigger_price=str(normalized_stop),
+            price_type=1,
+            order=FuturesOrder(
+                contract=contract,  # ✅ 반드시 필요
+                size=size if direction == "long" else -size,
+                price="0",
+                tif="ioc",
+                reduce_only=True,
+                close=True,
+                text="t-SL-UPDATE"
+            )
+        )
 
-        futures_api.create_price_triggered_order(settle="usdt", price_triggered_order=trigger)
+
+        futures_api.create_price_triggered_order(
+            settle="usdt",
+            contract=contract,  # 여기서 전달
+            price_triggered_order=trigger
+        )
 
         msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {stop_price}"
         print(msg)
@@ -400,7 +408,7 @@ def calculate_quantity_gate(
         precision = get_contract_precision(symbol)
         steps = floor(raw_qty / step_size)
         max_steps = floor((margin_cap * leverage) / (price * step_size))
-        steps = max(1, min(steps, max_steps - 1))  # 초과 방지용 1단계 여유
+        steps = max(1, min(steps, max_steps - 2))  # 초과 방지용 1단계 여유
         qty   = round(steps * step_size, precision)
 
         if qty < step_size:
