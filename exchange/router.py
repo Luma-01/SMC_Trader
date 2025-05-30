@@ -23,6 +23,7 @@ def update_stop_loss(symbol: str, direction: str, stop_price: float):
       - Binance : BTCUSDT
       - Gate    : BTC_USDT  ← 이미 변환된 값
     """
+    print(f"[router] SL 요청: {symbol} → {stop_price}")
     if symbol in GATE_SET:       # Gate 심볼이면
         return gate_sl(symbol, direction, stop_price)
     return binance_sl(symbol, direction, stop_price)

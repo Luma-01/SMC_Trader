@@ -171,9 +171,11 @@ class PositionManager:
         current_sl = self.positions[symbol]['sl']
         direction = self.positions[symbol]['direction']
         if direction == 'long':
+            # 롱 ➜ 새 SL 이 더 높아야 보수적
             return new_sl > current_sl
-        else:
-            return new_sl < current_sl
+        else:  # short
+            # 숏 ➜ 새 SL 도 가격 위로 올려야 보수적
+            return new_sl > current_sl
         
     def try_update_trailing_sl(self, symbol: str, current_price: float, threshold_pct: float = 0.01):
         if symbol not in self.positions:
@@ -199,8 +201,9 @@ class PositionManager:
                     send_discord_debug(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
         elif direction == "short":
-            new_sl = current_price * (1 + threshold_pct)
-            if new_sl < current_sl and self.should_update_sl(symbol, new_sl):
+            # 숏 포지션: 현재가보다 (1-threshold_pct) × Price → 위쪽으로 SL 올리기
+            new_sl = current_price * (1 - threshold_pct)
+            if new_sl > current_sl and self.should_update_sl(symbol, new_sl):
                 sl_result = update_stop_loss(symbol, direction, new_sl)
                 if isinstance(sl_result, int):
                     pos['sl'] = new_sl
