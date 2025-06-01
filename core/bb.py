@@ -19,9 +19,7 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
         ob_low = Decimal(str(ob['low']))
         ob_time = ob['time']
         df_after = df[df['time'] > ob_time].reset_index(drop=True)
-
-        invalidated = False
-        invalid_index = None
+        invalid_index = None      # OB 무효화된 봉 인덱스
 
         for i, row in df_after.iterrows():
             if ob_type == "bullish" and row['low'] < ob_low:
@@ -33,8 +31,12 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
                 invalid_index = i
                 break
 
-        if invalidated and invalid_index is not None:
-            for j in range(invalid_index + 1, min(invalid_index + 1 + max_rebound_candles, len(df_after))):
+        if invalid_index is not None:
+            # 무효화 직후 max_rebound_candles 이내에 반전 확인
+            for j in range(
+                invalid_index + 1,
+                min(invalid_index + 1 + max_rebound_candles, len(df_after))
+            ):
                 rebound = df_after.iloc[j]
                 high = Decimal(str(rebound['high']))
                 low = Decimal(str(rebound['low']))
@@ -57,5 +59,9 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     tf = df.attrs.get("tf", "?")
-    print(f"[BB][{tf}] {symbol} - BB {len(bb_zones)}개 감지됨")
+    if bb_zones:
+        last = bb_zones[-1]
+        print(f"[BB][{tf}] {symbol} → {last['type'].upper()} {last['low']}~{last['high']} (총 {len(bb_zones)})")
+    else:
+        print(f"[BB][{tf}] {symbol} → 감지 없음")
     return bb_zones

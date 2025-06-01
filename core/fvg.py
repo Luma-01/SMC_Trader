@@ -8,8 +8,10 @@ from decimal import Decimal, ROUND_DOWN
 def detect_fvg(df: pd.DataFrame) -> List[Dict]:
     fvg_zones = []
 
-    # 기본 tick size (추후 get_tick_size(symbol)로 교체 가능)
-    tick_size = Decimal("0.0001")
+    # tick_size 는 df.attrs 로부터 우선 시도 → 없으면 기본 0.0001
+    tick_size = Decimal(
+        str(df.attrs.get("tick_size", "0.0001"))
+    ).normalize()
     min_width = tick_size * 3  # 최소 유효 폭 조건
 
     for i in range(2, len(df)):
@@ -25,9 +27,9 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
                 continue
             fvg_zones.append({
                 "type": "bullish",
-                "low": str(low),
-                "high": str(high),
-                "time": df['time'].iloc[i]
+                "low": float(low),
+                "high": float(high),
+                "time": df["time"].iloc[i]
             })
 
         # 하락 FVG
@@ -39,14 +41,17 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
                 continue
             fvg_zones.append({
                 "type": "bearish",
-                "low": str(low),
-                "high": str(high),
-                "time": df['time'].iloc[i]
+                "low": float(low),
+                "high": float(high),
+                "time": df["time"].iloc[i]
             })
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     tf = df.attrs.get("tf", "?")
-    count = len(fvg_zones)
-    print(f"📉 [FVG][{tf}] {symbol} - FVG {count}개 감지됨")
+    if fvg_zones:
+        last = fvg_zones[-1]
+        print(f"[FVG][{tf}] {symbol} → {last['type'].upper()} {last['low']}~{last['high']} (총 {len(fvg_zones)})")
+    else:
+        print(f"[FVG][{tf}] {symbol} → 감지 없음")
     #send_discord_debug(f"📉 [FVG] {symbol} - FVG {count}개 감지됨", "aggregated")
     return fvg_zones

@@ -275,13 +275,30 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
             stop_dec = Decimal(str(stop_price)).quantize(tick, rounding=ROUND_DOWN)
         else:
             stop_dec = Decimal(str(stop_price)).quantize(tick, rounding=ROUND_UP)
-        stop_str = format(stop_dec, 'f')
+        # ▸ 마크가격 조회 → futures_mark_price 로 교체
+        mark_price = float(
+            client.futures_mark_price(symbol=symbol)["markPrice"]
+        )
+        tick_f = float(tick)
+
+        # LONG: stopPrice 는 markPrice-tick 보다 낮아야, SHORT: markPrice+tick 보다 높아야
+        if direction == "long" and stop_dec >= Decimal(str(mark_price)):
+            stop_dec = Decimal(str(mark_price - tick_f)).quantize(
+                tick, rounding=ROUND_DOWN
+            )
+        elif direction == "short" and stop_dec <= Decimal(str(mark_price)):
+            stop_dec = Decimal(str(mark_price + tick_f)).quantize(
+                tick, rounding=ROUND_UP
+            )
+
+        stop_str = format(stop_dec, "f")
 
         kwargs = dict(
-            symbol        = symbol,
-            side          = side,
-            type          = ORDER_TYPE_STOP_MARKET,
-            stopPrice     = stop_str,
+            symbol      = symbol,
+            side        = side,
+            type        = ORDER_TYPE_STOP_MARKET,
+            stopPrice   = stop_str,
+            workingType = "MARK_PRICE",      # ← 즉시 트리거 방지
             closePosition = True,
             timeInForce   = TIME_IN_FORCE_GTC,
         )
@@ -293,8 +310,15 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
             open_orders = client.futures_get_open_orders(symbol=symbol)
             for o in open_orders:
                 if o['type'] == ORDER_TYPE_STOP_MARKET and o.get('reduceOnly'):
-                    client.futures_cancel_order(symbol=symbol, orderId=o['orderId'])
-                    print(f"[CANCEL] {symbol} SL 주문 취소됨 (ID: {o['orderId']})")
+                    try:
+                        client.futures_cancel_order(symbol=symbol, orderId=o['orderId'])
+                        print(f"[CANCEL] {symbol} SL 주문 취소됨 (ID: {o['orderId']})")
+                    except BinanceAPIException as ce:
+                        # 주문이 이미 트리거돼서 사라진 경우 → 무시
+                        if ce.code == -2011:   # Unknown order
+                            pass
+                        else:
+                            raise
         except Exception as e:
             print(f"[WARN] SL 취소 실패: {e}")
             send_discord_debug(f"[BINANCE] SL 취소 실패 → {e}", "binance")

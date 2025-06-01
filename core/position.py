@@ -58,16 +58,11 @@ class PositionManager:
         if not mss_triggered and ltf_df is not None:
             mss_data = get_mss_and_protective_low(ltf_df, direction)
             if mss_data:
-                pos['mss_triggered'] = True
-                pos['protective_level'] = mss_data['protective_level']
-                protective = mss_data['protective_level']
+                pos["mss_triggered"]   = True
+                protective            = mss_data["protective_level"]
+                pos["protective_level"] = protective
                 print(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}")
                 send_discord_debug(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}", "aggregated")
-
-                if pos.get("sl_order_id"):
-                    cancel_order(symbol, pos["sl_order_id"])
-                    print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
-                    send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
 
                 # 보호선 도달 여부 먼저 체크
                 if ((direction == 'long' and current_price <= protective) or
@@ -77,7 +72,15 @@ class PositionManager:
                     self.close(symbol)
                     return
 
-                if self.should_update_sl(symbol, protective):
+                needs_update = self.should_update_sl(symbol, protective)
+
+                if needs_update:
+                    # 기존 SL 주문 먼저 취소
+                    if pos.get("sl_order_id"):
+                        cancel_order(symbol, pos["sl_order_id"])
+                        print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
+                        send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
+
                     sl_result = update_stop_loss(symbol, direction, protective)
                     if isinstance(sl_result, int):  # Binance 전용 SL ID
                         id_info = f" (ID: {sl_result})"
@@ -91,8 +94,8 @@ class PositionManager:
                         return
 
                 else:
-                    print(f"[SL] 보호선 SL 갱신 생략: 기존 SL보다 보수적이지 않음 | {symbol}")
-                    send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL보다 보수적이지 않음 | {symbol}", "aggregated")
+                    print(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}")
+                    send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}", "aggregated")
 
                 # MSS 먼저 발생했을 경우 → 즉시 전체 종료
                 if ((direction == 'long' and current_price <= protective) or
@@ -149,10 +152,13 @@ class PositionManager:
                 cancel_order(symbol, sl_order_id)
                 print(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})")
                 send_discord_debug(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})", "aggregated")
-            if exit_price is None:
-                exit_price = self.positions[symbol]["entry"]
-            del self.positions[symbol]
-            on_exit(symbol, exit_price)              # ★ 호출
+        if exit_price is None:
+            exit_price = self.positions[symbol]["entry"]
+        # SL 주문 취소 시도 …
+        from datetime import datetime, timezone
+        exit_time = datetime.now(timezone.utc)
+        on_exit(symbol, exit_price, exit_time)
+        del self.positions[symbol]
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
         self.positions[symbol] = {
@@ -174,8 +180,8 @@ class PositionManager:
             # 롱 ➜ 새 SL 이 더 높아야 보수적
             return new_sl > current_sl
         else:  # short
-            # 숏 ➜ 새 SL 도 가격 위로 올려야 보수적
-            return new_sl > current_sl
+            # ㊟ 숏 포지션은 “가격을 내려서(작게 만들어서)” SL 을 끌어 올립니다
+            return new_sl < current_sl
         
     def try_update_trailing_sl(self, symbol: str, current_price: float, threshold_pct: float = 0.01):
         if symbol not in self.positions:
@@ -201,9 +207,9 @@ class PositionManager:
                     send_discord_debug(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
         elif direction == "short":
-            # 숏 포지션: 현재가보다 (1-threshold_pct) × Price → 위쪽으로 SL 올리기
-            new_sl = current_price * (1 - threshold_pct)
-            if new_sl > current_sl and self.should_update_sl(symbol, new_sl):
+            # 숏 → “위쪽” = 현재가 + 1 % 
+            new_sl = current_price * (1 + threshold_pct)
+            if new_sl < current_sl and self.should_update_sl(symbol, new_sl):
                 sl_result = update_stop_loss(symbol, direction, new_sl)
                 if isinstance(sl_result, int):
                     pos['sl'] = new_sl

@@ -10,6 +10,8 @@ if sys.platform.startswith("win"):
 
 import pandas as pd
 from core.structure import detect_structure
+# Decimal 변환용 유틸
+from decimal import Decimal
 from config.settings import (
     SYMBOLS,
     SYMBOLS_GATE,
@@ -23,7 +25,7 @@ from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
-from exchange.router import get_open_position, update_stop_loss
+from exchange.router import get_open_position
 from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
 from exchange.binance_api import get_tick_size, calculate_quantity
 from exchange.binance_api import (
@@ -43,7 +45,14 @@ if ENABLE_GATE:
         calculate_quantity as calculate_quantity_gate,
         to_gate_symbol as to_gate,        # ← 실제 함수명이 다르면 맞춰 주세요
     )
+# Discord 알림
 from notify.discord import send_discord_debug, send_discord_message
+
+# ────────────────────────────────────────────────
+# 최소 SL 간격(틱) – 진입 직후 SL 터지는 현상 방지
+# (필요하면 config.settings 로 이동하세요)
+# ────────────────────────────────────────────────
+MIN_SL_TICKS = 5
 
 load_dotenv()
 pm = PositionManager()
@@ -111,21 +120,41 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             if ob["type"].lower() == direction:
                 zone = ob
                 break
-        if zone:
-            # buffer_value = SL_BUFFER 틱 * tick_size
-            buffer_value = Decimal(str(SL_BUFFER)) * tick_size
-            entry_dec = Decimal(str(entry))
+        entry_dec = Decimal(str(entry))
+
+        # ── 공통: tick_size × SL_BUFFER (Decimal) ─────────────────
+        buf_dec = tick_size * Decimal(str(SL_BUFFER))
+
+        # ── 1) OB/BB 존 extreme 기반 SL ────────────────────────────
+        if zone is not None:
             if direction == "long":
-                zone_low = Decimal(str(zone["low"])).quantize(tick_size)
-                sl_dec = (zone_low - buffer_value).quantize(tick_size)
-                tp_dec = (entry_dec + (entry_dec - sl_dec) * Decimal(str(RR))).quantize(tick_size)
+                sl_dec = (Decimal(str(zone["low"])) - buf_dec).quantize(tick_size)
             else:
-                zone_high = Decimal(str(zone["high"])).quantize(tick_size)
-                sl_dec = (zone_high + buffer_value).quantize(tick_size)
-                tp_dec = (entry_dec - (sl_dec - entry_dec) * Decimal(str(RR))).quantize(tick_size)
-            sl, tp = float(sl_dec), float(tp_dec)
+                sl_dec = (Decimal(str(zone["high"])) + buf_dec).quantize(tick_size)
+        # ── 2) fallback: 직전 캔들 extreme ──────────────────────────
         else:
-            sl, tp = calculate_sl_tp(entry, direction, SL_BUFFER, RR)
+            if direction == "long":
+                extreme = Decimal(str(ltf["low"].iloc[-2])).quantize(tick_size)
+                sl_dec = (extreme - buf_dec).quantize(tick_size)
+            else:
+                extreme = Decimal(str(ltf["high"].iloc[-2])).quantize(tick_size)
+                sl_dec = (extreme + buf_dec).quantize(tick_size)
+
+        # ── 3) 최소 SL 간격 보정 (전역 MIN_SL_TICKS 사용) ───────────
+        min_gap = tick_size * MIN_SL_TICKS
+        if abs(entry_dec - sl_dec) < min_gap:
+            adj = min_gap - abs(entry_dec - sl_dec)
+            sl_dec = (sl_dec + adj) if direction == "short" else (sl_dec - adj)
+            sl_dec = sl_dec.quantize(tick_size)
+
+        # ── 4) RR 비율 동일하게 TP 산출 ────────────────────────────
+        rr_dec = Decimal(str(RR))
+        if direction == "long":
+            tp_dec = (entry_dec + (entry_dec - sl_dec) * rr_dec).quantize(tick_size)
+        else:
+            tp_dec = (entry_dec - (sl_dec - entry_dec) * rr_dec).quantize(tick_size)
+
+        sl, tp = float(sl_dec), float(tp_dec)
 
         order_ok = False
         if is_gate:
@@ -151,9 +180,9 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             )
 
         if order_ok:
+            # pm.enter() 내부에서 SL 주문까지 생성하므로
+            # 중복 update_stop_loss() 호출을 제거합니다
             pm.enter(symbol, direction, entry, sl, tp)
-            # ▶ 초기 SL 주문 (진입 근거 캔들 하단)
-            update_stop_loss(symbol, direction, sl)
         else:
             print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
             send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")

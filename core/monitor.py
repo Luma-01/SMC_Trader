@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from mplfinance.original_flavor import candlestick_ohlc
 import matplotlib.dates as mdates
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -23,20 +23,27 @@ def on_entry(symbol: str, direction: str, entry: float, sl: float, tp: float):
         "open": entry,
         "sl": sl,
         "tp": tp,
-        "entry_time": datetime.utcnow(),
+        "entry_time": datetime.now(timezone.utc),   # UTC-aware
         "exit": None,
         "pnl": 0.0,
     })
     _capture_chart(TRADE_LOG[-1])   # ★ 진입 즉시 스냅샷
 
-def on_exit(symbol: str, exit_price: float):
+def on_exit(symbol: str, exit_price: float, exit_time: datetime | None = None):
+    """
+    exit_time 이 None 이면 UTC now 로 자동 지정.
+    PositionManager.close() 에서 timezone-aware 를 넘겨줄 수 있음.
+    """
+    if exit_time is None:
+        exit_time = datetime.now(timezone.utc)
+
     for trade in reversed(TRADE_LOG):
         if trade["symbol"] == symbol and trade["exit"] is None:
-            trade["exit"] = exit_price
-            trade["exit_time"] = datetime.utcnow()
+            trade["exit"]      = exit_price
+            trade["exit_time"] = exit_time          # <- aware
             mult = 1 if trade["direction"] == "long" else -1
             trade["pnl"] = (exit_price - trade["open"]) * mult
-            _capture_chart(trade)      # PNG 생성 & 전송
+            _capture_chart(trade)                   # PNG 생성 & 전송
             break
 
 # ────────────────────────── 차트 캡쳐 & 전송 ─────────────────────────
@@ -90,7 +97,15 @@ def maybe_send_weekly_report(now: datetime):
 
     _last_report_week = now.isocalendar().week
     week_ago = now - timedelta(days=7)
-    week_trades = [t for t in TRADE_LOG if t.get("exit_time") and t["exit_time"] >= week_ago]
+    
+    # ▸ exit_time 이 과거 버전(naive)일 수 있으므로 비교 전에 UTC 로 보정
+    def _aware(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+    week_trades = [
+        t for t in TRADE_LOG
+        if (et := t.get("exit_time")) and _aware(et) >= week_ago
+    ]
     if not week_trades:
         return
 
