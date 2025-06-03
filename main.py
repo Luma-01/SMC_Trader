@@ -101,14 +101,14 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         ):
             return
 
+        # Gate · Binance 모두 Decimal 로 통일 (precision 오류 방지!)
         tick_size = (
-            Decimal(str(get_tick_size_gate(symbol)))
-            if is_gate else
-            get_tick_size(base_sym)
+            Decimal(str(get_tick_size_gate(symbol))) if is_gate
+            else Decimal(str(get_tick_size(base_sym)))
         )
 
         # ⬇️ htf 전체 DataFrame을 그대로 넘겨야 attrs 를 활용할 수 있음
-        signal, direction = is_iof_entry(htf, ltf, tick_size)
+        signal, direction, trg_zone = is_iof_entry(htf, ltf, tick_size)
         if not signal or direction is None:
             return
 
@@ -125,8 +125,15 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         # ── 공통: tick_size × SL_BUFFER (Decimal) ─────────────────
         buf_dec = tick_size * Decimal(str(SL_BUFFER))
 
-        # ── 1) OB/BB 존 extreme 기반 SL ────────────────────────────
-        if zone is not None:
+        # ── 1) ‘트리거 Zone’ 이탈 기준 SL ──
+        if trg_zone is not None:
+            if direction == "long":
+                sl_dec = (Decimal(str(trg_zone["low"])) - buf_dec).quantize(tick_size)
+            else:
+                sl_dec = (Decimal(str(trg_zone["high"])) + buf_dec).quantize(tick_size)
+    
+        # ── 2) fallback : 최근 OB extreme ──
+        elif zone is not None:
             if direction == "long":
                 sl_dec = (Decimal(str(zone["low"])) - buf_dec).quantize(tick_size)
             else:
@@ -140,7 +147,16 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 extreme = Decimal(str(ltf["high"].iloc[-2])).quantize(tick_size)
                 sl_dec = (extreme + buf_dec).quantize(tick_size)
 
-        # ── 3) 최소 SL 간격 보정 (전역 MIN_SL_TICKS 사용) ───────────
+        # ── 3) 방향-무결성(SL이 Risk 쪽) 검사  ────────────────────
+        #    ↳ 조건이 맞지 않으면 fallback extreme 로 강제 교체
+        if direction == "long" and sl_dec >= entry_dec:
+            extreme = Decimal(str(ltf["low"].iloc[-2])).quantize(tick_size)
+            sl_dec  = (extreme - buf_dec).quantize(tick_size)
+        elif direction == "short" and sl_dec <= entry_dec:
+            extreme = Decimal(str(ltf["high"].iloc[-2])).quantize(tick_size)
+            sl_dec  = (extreme + buf_dec).quantize(tick_size)
+
+        # ── 4) 최소 SL 간격 보정 (전역 MIN_SL_TICKS 사용) ───────────
         min_gap = tick_size * MIN_SL_TICKS
         if abs(entry_dec - sl_dec) < min_gap:
             adj = min_gap - abs(entry_dec - sl_dec)
@@ -254,8 +270,46 @@ async def strategy_loop():
 
         await asyncio.sleep(5)
 
-        # ───── 주간 리포트 (일요일 자정 UTC) ─────
+        # ─── 수동(외부) 청산 ↔ 내부 포지션 동기화 ───
+        await reconcile_internal_with_live()
         maybe_send_weekly_report(datetime.now(timezone.utc))
+
+# 내부(pm) ↔ 거래소 포지션 자동 동기화
+async def reconcile_internal_with_live():
+    """
+    ① 내부 pm 에는 있지만 거래소에는 없는 경우  → force_exit()  
+    ② (선택) 거래소에만 있는 포지션은 pm.init_position() 으로 끌어오기
+    """
+    for sym in pm.active_symbols():                 # 심볼 목록
+        live = get_open_position(sym)
+        # live 가 None 이거나 size == 0  → 수동 청산됐다고 판단
+        if not live or abs(live.get("entry", 0)) == 0:
+            print(f"[SYNC] 내부포지션 폐기(수동청산 감지) → {sym}")
+            # on_exit() 호출로 P&L 정산 & 잠금 해제
+            from core.monitor import on_exit
+            try:
+                price = pm.last_price(sym)
+            except Exception:
+                price = live.get("price", 0) if live else 0
+            pm.force_exit(sym, price)                # 내부 on_exit 포함
+
+    # ② 옵션 : 거래소에만 존재하고 내부엔 없는 포지션 동기화
+    #   필요한 경우 아래 블록 주석 제거
+    """
+    all_symbols = list(SYMBOLS.keys())       # Binance 심볼 기준
+    if ENABLE_GATE:
+        all_symbols += [to_gate(s) for s in SYMBOLS_GATE]
+    for sym in all_symbols:
+        if pm.has_position(sym):
+            continue
+        live = get_open_position(sym)
+        if live and abs(live.get("entry", 0)) > 0:
+            dir_ = live["direction"]
+            entry = live["entry"]
+            sl, tp = calculate_sl_tp(entry, dir_, SL_BUFFER, RR)
+            print(f"[SYNC] 외부 포지션 가져오기 → {sym}")
+            pm.init_position(sym, dir_, entry, sl, tp)
+    """
 
 async def main():
     initialize()

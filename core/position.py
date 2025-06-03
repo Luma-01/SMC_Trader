@@ -10,6 +10,26 @@ class PositionManager:
     def __init__(self):
         self.positions: Dict[str, Dict] = {}
 
+    # 현재 내부에서 '열려-있다'고 간주되는 심볼 리스트
+    def active_symbols(self) -> list[str]:
+        return list(self.positions.keys())
+    
+    # 외부(거래소)에서 이미 청산됐음을 감지했을 때 메모리에서 제거
+    def force_exit(self, symbol: str, exit_price: float | None = None):
+        """거래소에서 이미 닫혔다고 판단될 때 호출"""
+        if symbol not in self.positions:
+            return
+        if exit_price is None:
+            exit_price = self.positions[symbol].get("last_price",   # 직전가
+                         self.positions[symbol]["entry"])           # 없으면 진입가
+        from datetime import datetime, timezone
+        on_exit(symbol, exit_price, datetime.now(timezone.utc))
+        self.positions.pop(symbol, None)
+
+    # 최근 가격을 가져오기 (없으면 KeyError)
+    def last_price(self, symbol: str) -> float:
+        return self.positions[symbol]["last_price"]
+
     def has_position(self, symbol: str) -> bool:
         return symbol in self.positions
 
@@ -19,6 +39,7 @@ class PositionManager:
             "entry": entry,
             "sl": sl,
             "tp": tp,
+            "last_price": entry,          # ← 한 번 넣어두면 KeyError 방지
             "half_exit": False,
             "protective_level": None,
             "mss_triggered": False,
@@ -43,6 +64,7 @@ class PositionManager:
             return
 
         pos = self.positions[symbol]
+        pos["last_price"] = current_price          # ← 가장 먼저 업데이트
         direction = pos['direction']
         sl, tp = pos['sl'], pos['tp']
         entry = pos['entry']
@@ -166,6 +188,7 @@ class PositionManager:
             "entry": entry,
             "sl": sl,
             "tp": tp,
+            "last_price": entry,          # ← 한 번 넣어두면 KeyError 방지
             "half_exit": False,
             "protective_level": None,
             "mss_triggered": False

@@ -198,8 +198,31 @@ def place_order_with_tp_sl(
 
         # ── ② TP / SL 주문 생성 ─────────────────────────
         opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
+        # ── TP 수량 산정 ────────────────────────────────
         half_qty = math.floor((filled_qty / 2) / step) * step
         half_qty = round(half_qty, prec)
+
+        # stepSize 보다 작으면 → 전량 TP
+        if half_qty == 0:
+            half_qty = round(math.floor(filled_qty / step) * step, prec)
+
+        # ── 바이낸스 MIN_NOTIONAL 필터 재검증 ────────────
+        min_notional_tp = None
+        for s in exch["symbols"]:
+            if s["symbol"] == symbol.upper():
+                for f in s["filters"]:
+                    if f["filterType"] == "MIN_NOTIONAL":
+                        min_notional_tp = float(f["notional"])
+                        break
+                break
+
+        if min_notional_tp and half_qty * float(tp) < min_notional_tp:
+            # notional 부족 → step 단위로 수량 보정
+            half_qty = math.ceil(
+                min_notional_tp / (float(last_price) * step)
+            ) * step
+            half_qty = round(half_qty, prec)
+            
         tp_kwargs = dict(
             symbol      = symbol,
             side        = opposite_side,
