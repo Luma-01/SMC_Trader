@@ -115,9 +115,18 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         entry = float(ltf["close"].iloc[-1])
         # Zone 기반 SL/TP 계산 (OB 사용)
         zone = None
-        # 최근 OB 중 현재 방향과 일치하는 마지막 zone 선택
+        # ────────────────  ❗FVG 제외 ────────────────
+        # detect_ob() 가 리턴하는 dict 예시:
+        #   {"type": "long", "pattern": "ob", "high": …, "low": …}
+        #   {"type": "short","pattern": "fvg", …}
+        #
+        # pattern(=구조 종류)이 'fvg' 이면 건너뛰고,
+        # 그렇지 않은 블록(OB, BB 등)만 진입 근거로 사용한다.
         for ob in reversed(detect_ob(ltf)):
-            if ob["type"].lower() == direction:
+            if ob.get("pattern") == "fvg":          # ➜ 노이즈 많은 FVG 스킵
+                continue
+
+            if ob["type"].lower() == direction:     # 방향 일치하는 마지막 블록
                 zone = ob
                 break
         entry_dec = Decimal(str(entry))
