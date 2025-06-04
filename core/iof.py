@@ -2,7 +2,6 @@
 
 import pandas as pd
 from core.structure import detect_structure
-from core.fvg import detect_fvg
 from core.ob import detect_ob
 from core.bb import detect_bb
 from core.utils import refined_premium_discount_filter
@@ -75,50 +74,12 @@ def is_iof_entry(
     buffer = tick_size * 10  # ✅ 진입 완화용 버퍼 설정
     near_buffer = tick_size * 10  # ✅ 근접 로그용 완화 조건
 
-    # 3. FVG 진입 여부
-    fvg_zones = detect_fvg(ltf_df)
-    if fvg_zones:
-        for fvg in reversed(fvg_zones[-10:]):
-            low = Decimal(str(fvg['low'])).quantize(tick_size)
-            high = Decimal(str(fvg['high'])).quantize(tick_size)
-            entry_low = (low - buffer).quantize(tick_size)
-            entry_high = (high + buffer).quantize(tick_size)
-            #print(f"[DEBUG] FVG {fvg['type']} ZONE: {low} ~ {high}, CURRENT: {current_price}")
-            #print(f"[DEBUG] FVG 진입 조건 검사: symbol={symbol}, tf={tf}, direction={direction}, fvg_type={fvg['type']}, "
-            #    f"range=({low} ~ {high}), price={current_price}")
-            near_low = (low - near_buffer).quantize(tick_size)
-            near_high = (high + near_buffer).quantize(tick_size)
-            if near_low <= current_price <= near_high:
-                print(f"[NEAR MISS] 🔍 FVG {fvg['type']} 근접 | 범위: {low} ~ {high} | 현재가: {current_price}")
-                send_discord_debug(f"[NEAR MISS] FVG {fvg['type']} 근접 | 범위: {low} ~ {high} | 현재가: {current_price}", "aggregated")
-            if direction == 'long' and fvg['type'] == 'bullish':
-                if entry_low <= current_price <= entry_high:
-                    print(f"[IOF] ✅ LONG 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}")
-                    send_discord_debug(f"[IOF] ✅ LONG 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}", "aggregated")
-                    trigger_zone = {
-                        "kind": "fvg",
-                        "type": fvg["type"],
-                        "low":  float(low),
-                        "high": float(high)
-                    }
-                    return True, direction, trigger_zone
-            elif direction == 'short' and fvg['type'] == 'bearish':
-                if entry_low <= current_price <= entry_high:
-                    print(f"[IOF] ✅ SHORT 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}")
-                    send_discord_debug(f"[IOF] ✅ SHORT 진입 조건 충족 | FVG 범위: {fvg['low']} ~ {fvg['high']} | 현재가: {current_price}", "aggregated")                 
-                    trigger_zone = {
-                        "kind": "fvg",
-                        "type": fvg["type"],
-                        "low":  float(low),
-                        "high": float(high)
-                    }
-                    return True, direction, trigger_zone
-    else:
-        print("[IOF] ❌ FVG 감지 안됨")
-        send_discord_debug("[IOF] ❌ FVG 감지 안됨", "aggregated")
+    # 3. ⚠️ FVG 무시 → 스킵 (노이즈 감소)
+    #    => detect_fvg() 호출/로그 삭제
+    # ------------------------------------------------
 
 
-    # 4. OB 진입 여부
+    # 3. OB 진입 여부
     ob_zones = detect_ob(ltf_df)
     if ob_zones:
         for ob in reversed(ob_zones[-10:]):
@@ -149,7 +110,7 @@ def is_iof_entry(
         print("[IOF] ❌ OB 감지 안됨")
         send_discord_debug("[IOF] ❌ OB 감지 안됨", "aggregated")            
 
-    # 5. BB 진입 여부
+    # 4. BB 진입 여부
     bb_zones = detect_bb(ltf_df, ob_zones)
     if bb_zones:
         for bb in reversed(bb_zones[-10:]):
@@ -180,6 +141,6 @@ def is_iof_entry(
         print("[IOF] ❌ BB 감지 안됨")
         send_discord_debug("[IOF] ❌ BB 감지 안됨", "aggregated")            
             
-    print(f"[IOF] [{symbol}-{tf}] ❌ FVG/OB/BB 영역 내 진입 아님 → 현재가: {current_price}")
-    #send_discord_debug(f"[IOF] ❌ FVG/OB/BB 영역 내 진입 아님 → 현재가: {current_price}", "aggregated")
+    print(f"[IOF] [{symbol}-{tf}] ❌ OB/BB 영역 내 진입 아님 → 현재가: {current_price}")
+    #send_discord_debug(f"[IOF] ❌ OB/BB 영역 내 진입 아님 → 현재가: {current_price}", "aggregated")
     return False, direction, None
