@@ -82,7 +82,7 @@ def is_iof_entry(
     # 3. OB 진입 여부
     ob_zones = detect_ob(ltf_df)
     if ob_zones:
-        for ob in reversed(ob_zones[-10:]):
+        for ob in reversed(ob_zones[-50:]):
             if ob['type'].lower() == direction:
                 low = Decimal(str(ob['low'])).quantize(tick_size)
                 high = Decimal(str(ob['high'])).quantize(tick_size)
@@ -113,7 +113,7 @@ def is_iof_entry(
     # 4. BB 진입 여부
     bb_zones = detect_bb(ltf_df, ob_zones)
     if bb_zones:
-        for bb in reversed(bb_zones[-10:]):
+        for bb in reversed(bb_zones[-50:]):
             if bb['type'].lower() == direction:
                 low = Decimal(str(bb['low'])).quantize(tick_size)
                 high = Decimal(str(bb['high'])).quantize(tick_size)
