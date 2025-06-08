@@ -4,7 +4,8 @@ from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
 from core.monitor import on_entry, on_exit     # ★ 추가
 from notify.discord import send_discord_message, send_discord_debug
-from exchange.router import update_stop_loss, cancel_order
+from exchange.router import (update_stop_loss, cancel_order, close_position_market,)       # ★ 실제 청산용
+from core.data_feed import ensure_stream
 
 class PositionManager:
     def __init__(self):
@@ -34,6 +35,7 @@ class PositionManager:
         return symbol in self.positions
 
     def enter(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
+        ensure_stream(symbol)
         self.positions[symbol] = {
             "direction": direction,
             "entry": entry,
@@ -49,8 +51,11 @@ class PositionManager:
 
         # 진입 시 SL 주문 생성
         sl_result = update_stop_loss(symbol, direction, sl)
-        if isinstance(sl_result, int):  # Binance 전용 ID
-            self.positions[symbol]['sl_order_id'] = sl_result
+        # Binance ➜ order-id(int), Gate ➜ True  →  둘 다 “성공”으로 처리
+        if sl_result is not False:
+            self.positions[symbol]['sl_order_id'] = (
+                sl_result if isinstance(sl_result, int) else None
+            )
             self.positions[symbol]['sl'] = sl
             print(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}")
             send_discord_debug(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}", "aggregated")
@@ -64,16 +69,17 @@ class PositionManager:
             return
 
         pos = self.positions[symbol]
+        protective = pos.get("protective_level")       # ← 있을 수도/없을 수도
         pos["last_price"] = current_price          # ← 가장 먼저 업데이트
         direction = pos['direction']
         sl, tp = pos['sl'], pos['tp']
         entry = pos['entry']
         half_exit = pos['half_exit']
-        protective = pos['protective_level']
         mss_triggered = pos['mss_triggered']
 
-        # 절반 익절 전 && MSS 발생 전 → 트레일링 SL 갱신 시도
-        if not half_exit and not mss_triggered:
+        # (수정) 절반 익절 전이라면 무조건 트레일링-SL 체크
+        # └ MSS 가 이미 발생했더라도 protective level 을 범하지 않게 내부에서 제어
+        if not half_exit:
             self.try_update_trailing_sl(symbol, current_price)
 
         # MSS 먼저 발생했는지 확인
@@ -96,6 +102,18 @@ class PositionManager:
 
                 needs_update = self.should_update_sl(symbol, protective)
 
+                # ─── 추가: 보호선-엔트리 거리 최소 0.03 % 보장 ───────────
+                min_rr      = 0.0003       # 0.03 %
+                risk_ratio  = abs(entry - protective) / entry
+                if risk_ratio < min_rr:
+                    print(f"[SL] 보호선 무시: 엔트리와 {risk_ratio:.4%} 격차(≥ {min_rr*100:.2f}% 필요) | {symbol}")
+                    send_discord_debug(
+                        f"[SL] 보호선 무시: 진입가와 {risk_ratio:.4%} 격차 – 기존 SL 유지", "aggregated"
+                    )
+                    needs_update = False
+
+                # ────────────────────────────────────────────────────────
+
                 if needs_update:
                     # 기존 SL 주문 먼저 취소
                     if pos.get("sl_order_id"):
@@ -104,9 +122,11 @@ class PositionManager:
                         send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
 
                     sl_result = update_stop_loss(symbol, direction, protective)
-                    if isinstance(sl_result, int):  # Binance 전용 SL ID
+                    if sl_result is not False:      # 성공 여부만 판단
                         id_info = f" (ID: {sl_result})"
-                        pos["sl_order_id"] = sl_result
+                        pos["sl_order_id"] = (
+                            sl_result if isinstance(sl_result, int) else None
+                        )
                         pos["sl"] = protective
                         print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}")
                         send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}", "aggregated")
@@ -167,20 +187,37 @@ class PositionManager:
                 self.close(symbol)
 
     def close(self, symbol: str, exit_price: float | None = None):
-        if symbol in self.positions:
-            # SL 주문 취소 시도
-            sl_order_id = self.positions[symbol].get("sl_order_id")
-            if sl_order_id:
-                cancel_order(symbol, sl_order_id)
-                print(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})")
-                send_discord_debug(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})", "aggregated")
+        """
+        * 여러 곳에서 동시에 호출돼도 안전하도록 idempotent 처리
+        * pop() 을 한 번만 호출해 KeyError 방지
+        """
+        pos = self.positions.pop(symbol, None)     # ⬅️ 이미 지워졌다면 None
+        if pos is None:
+            return
+
+        # SL 주문 취소
+        sl_order_id = pos.get("sl_order_id")
+        if sl_order_id:
+            cancel_order(symbol, sl_order_id)
+            print(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})")
+            send_discord_debug(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})", "aggregated")
+
+        # ────────────────────────────────
+        # 1) 실거래소 포지션 시장가 청산
+        # ────────────────────────────────
+        try:
+            close_position_market(symbol)                # ← ★ 핵심 한 줄
+            print(f"[EXIT] {symbol} 시장가 청산 요청 완료")
+            send_discord_debug(f"[EXIT] {symbol} 시장가 청산 완료", "aggregated")
+        except Exception as e:
+            print(f"[WARN] {symbol} 시장가 청산 실패 → {e}")
+            send_discord_debug(f"[WARN] {symbol} 시장가 청산 실패 → {e}", "aggregated")
+
         if exit_price is None:
-            exit_price = self.positions[symbol]["entry"]
-        # SL 주문 취소 시도 …
+            exit_price = pos.get("last_price", pos["entry"])
+
         from datetime import datetime, timezone
-        exit_time = datetime.now(timezone.utc)
-        on_exit(symbol, exit_price, exit_time)
-        del self.positions[symbol]
+        on_exit(symbol, exit_price, datetime.now(timezone.utc))
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
         self.positions[symbol] = {
@@ -213,17 +250,23 @@ class PositionManager:
         pos = self.positions[symbol]
         direction = pos['direction']
         current_sl = pos['sl']
+        protective  = pos.get("protective_level")
 
         # 절반 익절 이후는 보호선 로직에 맡기므로 생략
         if pos.get('half_exit'):
             return
 
-        # 트레일링 SL 계산
+        # ─── 최소 거리(리스크-가드) 확보 ───
+        min_rr = 0.0003                      # 0.03 %
         if direction == "long":
             new_sl = current_price * (1 - threshold_pct)
-            if new_sl > current_sl and self.should_update_sl(symbol, new_sl):
+            if (new_sl > current_sl
+                and self.should_update_sl(symbol, new_sl)
+                and (entry := pos['entry'])            # grab once
+                and abs(entry - new_sl) / entry >= min_rr
+                and (protective is None or new_sl > protective)):
                 sl_result = update_stop_loss(symbol, direction, new_sl)
-                if isinstance(sl_result, int):
+                if sl_result is not False:
                     pos['sl'] = new_sl
                     pos['sl_order_id'] = sl_result
                     print(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
@@ -232,11 +275,17 @@ class PositionManager:
         elif direction == "short":
             # 숏 → “위쪽” = 현재가 + 1 % 
             new_sl = current_price * (1 + threshold_pct)
-            if new_sl < current_sl and self.should_update_sl(symbol, new_sl):
+            if (new_sl < current_sl
+                and self.should_update_sl(symbol, new_sl)
+                and (entry := pos['entry'])
+                and abs(entry - new_sl) / entry >= min_rr
+                and (protective is None or new_sl < protective)):   # 보호선보다 위험하지 않게
                 sl_result = update_stop_loss(symbol, direction, new_sl)
                 if isinstance(sl_result, int):
                     pos['sl'] = new_sl
-                    pos['sl_order_id'] = sl_result
+                    pos['sl_order_id'] = (
+                        sl_result if isinstance(sl_result, int) else None
+                    )
                     print(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 

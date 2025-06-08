@@ -4,12 +4,15 @@ from exchange.binance_api import (
     update_stop_loss_order as binance_sl,
     get_open_position     as binance_pos,
     get_tick_size         as binance_tick,
+    place_order           as binance_place,   # ⬅︎ 추가
 )
-from exchange.gate_sdk import get_open_position as gate_pos
+# Gate
 from exchange.gate_sdk import (
-    update_stop_loss_order as gate_sl,
+    get_open_position         as gate_pos,
+    update_stop_loss_order    as gate_sl,
     normalize_contract_symbol as to_gate,
-    get_tick_size as gate_tick,
+    get_tick_size             as gate_tick,
+    place_order               as gate_place,   # ⬅︎ 추가
 )
 # Gate 심볼 집합(BTC_USDT 형식) 생성 (미지원 심볼 스킵)
 from config.settings import SYMBOLS_GATE
@@ -66,3 +69,49 @@ def get_open_position(symbol: str):
     if "_USDT" in symbol:
         return gate_pos(symbol)
     return binance_pos(symbol)
+
+def close_position_market(symbol: str):
+    """
+    현재 열려있는 포지션을 **시장가·reduce-only** 로 전량 청산  
+    거래소마다 포지션 dict 구조가 달라 `size` 키가 없을 수 있으므로
+    안전하게 처리합니다.
+    """
+    pos = get_open_position(symbol)
+    if not pos:
+        return
+
+    # ── 1) 수량 추출 ──────────────────────────────
+    def _pos_size(p: dict) -> float:
+        """
+        size, positionAmt, qty … 여러 후보 키를 순회하며
+        첫 번째로 “숫자 변환 가능” 한 값을 반환
+        """
+        for k in ("size", "positionAmt", "qty", "amount"):
+            v = p.get(k)
+            if v not in (None, '', 0):
+                try:
+                    return abs(float(v))
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    size = _pos_size(pos)
+    if size == 0:
+        return
+
+    # ── 2) 방향 판단 ──────────────────────────────
+    direction = pos.get("direction")
+    if direction is None:
+        # Binance: positionAmt 양수=Long, 음수=Short
+        amt = float(pos.get("positionAmt", 0))
+        direction = "long" if amt > 0 else "short"
+
+    side = "sell" if direction == "long" else "buy"
+
+    # ── 3) 거래소별 주문 라우팅 ────────────────────
+    if "_USDT" in symbol:      # Gate
+        return gate_place(symbol, side, size,
+                          order_type="MARKET", reduceOnly=True)
+    # Binance
+    return binance_place(symbol, side, size,
+                         order_type="MARKET", reduceOnly=True)

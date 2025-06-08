@@ -64,4 +64,32 @@ def detect_bb(df: pd.DataFrame, ob_zones: List[Dict], max_rebound_candles: int =
         print(f"[BB][{tf}] {symbol} → {last['type'].upper()} {last['low']}~{last['high']} (총 {len(bb_zones)})")
     else:
         print(f"[BB][{tf}] {symbol} → 감지 없음")
+
+    # ───────── 중복-알림 차단 ──────────
+    symbol = df.attrs.get("symbol", "UNKNOWN")
+    tf     = df.attrs.get("tf", "?")
+    key    = (symbol, tf)
+
+    _seen = _BB_CACHE.setdefault(key, set())   # 전역 dict  { (sym,tf): set() }
+    fresh = []
+    for z in bb_zones:
+        sig = (round(z["low"], 8), round(z["high"], 8), z["type"])
+        if sig in _seen:
+            continue                # 이미 알림 → 건너뜀
+        _seen.add(sig)
+        fresh.append(z)
+
+    # ① fresh 로 잡힌 BB 만 알림
+    for z in fresh[-5:]:
+        msg = (
+            f"[BB] {symbol} ({tf}) NEW {z['type'].upper()}  "
+            f"{z['low']} ~ {z['high']}  |  {z['time']:%Y-%m-%d %H:%M}"
+        )
+        print(msg)
+        #send_discord_debug(msg, "aggregated")          # 두 번째 인자는 원하는 태그
+
+    # ② 전략에는 전체 OB 리스트를 넘긴다
     return bb_zones
+
+# ───────── 모듈 전역 캐시  ─────────
+_BB_CACHE: dict[tuple[str, str], set[tuple]] = {}

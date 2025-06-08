@@ -1,6 +1,7 @@
 # core/iof.py
 
 import pandas as pd
+from datetime import datetime
 from core.structure import detect_structure
 from core.ob import detect_ob
 from core.bb import detect_bb
@@ -8,6 +9,9 @@ from core.utils import refined_premium_discount_filter
 from notify.discord import send_discord_debug
 from typing import Tuple, Optional, Dict
 from decimal import Decimal
+
+_LAST_OB_TIME: dict[tuple[str, str], datetime]          = {}
+_OB_CACHE_HTF: dict[tuple[str, str], tuple]            = {}
 
 #   True/False , 'long'|'short'|None ,  존 dict 또는 None
 def is_iof_entry(
@@ -41,9 +45,9 @@ def is_iof_entry(
     print(f"[BIAS] [{symbol}-{tf}] HTF 구조 기준 Bias = {bias} (최근 구조: {recent})")
     #send_discord_debug(f"[BIAS] HTF 구조 기준 Bias = {bias} (최근 구조: {recent})", "aggregated")
 
-    if recent in ['BOS_up', 'CHoCH_up']:
+    if recent in ['BOS_up', 'CHoCH_up', 'OB_Break_up']:
         direction = 'long'
-    elif recent in ['BOS_down', 'CHoCH_down']:
+    elif recent in ['BOS_down', 'CHoCH_down', 'OB_Break_down']:
         direction = 'short'
     else:
         print(f"[IOF] [{symbol}-{tf}] ❌ 최근 구조 신호 미충족 → 최근 구조: {recent}")
@@ -74,73 +78,81 @@ def is_iof_entry(
     buffer = tick_size * 10  # ✅ 진입 완화용 버퍼 설정
     near_buffer = tick_size * 10  # ✅ 근접 로그용 완화 조건
 
-    # 3. ⚠️ FVG 무시 → 스킵 (노이즈 감소)
-    #    => detect_fvg() 호출/로그 삭제
-    # ------------------------------------------------
+    # ---------------------------------------------------------------------
+    # 3-A)  ❖  HTF OB/BB 존 안에 있는지 먼저 확인
+    # ---------------------------------------------------------------------
+    IN_HTF_ZONE = False
+    last_htf_time = htf_df["time"].iloc[-1]      # 마지막 완결 15m 캔들 시각
 
-
-    # 3. OB 진입 여부
-    ob_zones = detect_ob(ltf_df)
-    if ob_zones:
-        for ob in reversed(ob_zones[-50:]):
-            if ob['type'].lower() == direction:
-                low = Decimal(str(ob['low'])).quantize(tick_size)
-                high = Decimal(str(ob['high'])).quantize(tick_size)
-                entry_low = (low - buffer).quantize(tick_size)
-                entry_high = (high + buffer).quantize(tick_size)
-                near_low = (low - near_buffer).quantize(tick_size)
-                near_high = (high + near_buffer).quantize(tick_size)
-                #print(f"[DEBUG] OB {ob['type']} ZONE: {low} ~ {high}, CURRENT: {current_price}")
-                if near_low <= current_price <= near_high:
-                    print(f"[NEAR MISS] 🔍 OB {ob['type']} 근접 | 범위: {low} ~ {high} | 현재가: {current_price}")
-                    send_discord_debug(f"[NEAR MISS] OB {ob['type']} 근접 | 범위: {low} ~ {high} | 현재가: {current_price}", "aggregated")
-                if entry_low <= current_price <= entry_high:
-                    print(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (OB 기반) | OB 범위: {ob['low']} ~ {ob['high']} | 현재가: {current_price}")
-                    send_discord_debug(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (OB 기반) | OB 범위: {ob['low']} ~ {ob['high']} | 현재가: {current_price}", "aggregated")
-                    
-                    trigger_zone = {
-                        "kind": "ob",
-                        "type": ob["type"],
-                        "low":  float(low),
-                        "high": float(high)
-                    }
-                    return True, direction, trigger_zone
-            
+    cache_key = (symbol, tf)
+    if _LAST_OB_TIME.get(cache_key) != last_htf_time:
+        # ① 15 m 캔들이 새로 닫혔을 때만 HTF OB/BB 재계산
+        htf_ob = detect_ob(htf_df)
+        htf_bb = detect_bb(htf_df, htf_ob)
+        _OB_CACHE_HTF[cache_key] = (last_htf_time, htf_ob, htf_bb)
+        _LAST_OB_TIME[cache_key] = last_htf_time
     else:
-        print("[IOF] ❌ OB 감지 안됨")
-        send_discord_debug("[IOF] ❌ OB 감지 안됨", "aggregated")            
+        # ② 직전 계산값 재사용
+        _, htf_ob, htf_bb = _OB_CACHE_HTF.get(cache_key, (None, [], []))
 
-    # 4. BB 진입 여부
-    bb_zones = detect_bb(ltf_df, ob_zones)
-    if bb_zones:
-        for bb in reversed(bb_zones[-50:]):
-            if bb['type'].lower() == direction:
-                low = Decimal(str(bb['low'])).quantize(tick_size)
-                high = Decimal(str(bb['high'])).quantize(tick_size)
-                entry_low = (low - buffer).quantize(tick_size)
-                entry_high = (high + buffer).quantize(tick_size)
-                near_low = (low - near_buffer).quantize(tick_size)
-                near_high = (high + near_buffer).quantize(tick_size)
-                #print(f"[DEBUG] BB {bb['type']} ZONE: {low} ~ {high}, CURRENT: {current_price}")
-                if near_low <= current_price <= near_high:
-                    print(f"[NEAR MISS] 🔍 BB {bb['type']} 근접 | 범위: {low} ~ {high} | 현재가: {current_price}")
-                    send_discord_debug(f"[NEAR MISS] BB {bb['type']} 근접 | 범위: {low} ~ {high} | 현재가: {current_price}", "aggregated")
-                if entry_low <= current_price <= entry_high:
-                    print(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (BB 기반) | BB 범위: {bb['low']} ~ {bb['high']} | 현재가: {current_price}")
-                    send_discord_debug(f"[IOF] ✅ {direction.upper()} 진입 조건 충족 (BB 기반) | BB 범위: {bb['low']} ~ {bb['high']} | 현재가: {current_price}", "aggregated")
+    # ── 모든 경우에 대해 None 방지 & 디버그 출력 ─────────────────────────────
+    htf_ob = htf_ob or []
+    htf_bb = htf_bb or []
+    print(f"[DEBUG] {symbol}-{tf}  HTF_OB={len(htf_ob)}  HTF_BB={len(htf_bb)}")
 
-                    trigger_zone = {
-                        "kind": "bb",
-                        "type": bb["type"],
-                        "low":  float(low),
-                        "high": float(high)
-                    }
-                    return True, direction, trigger_zone
-            
-    else:
-        print("[IOF] ❌ BB 감지 안됨")
-        send_discord_debug("[IOF] ❌ BB 감지 안됨", "aggregated")            
-            
-    print(f"[IOF] [{symbol}-{tf}] ❌ OB/BB 영역 내 진입 아님 → 현재가: {current_price}")
-    #send_discord_debug(f"[IOF] ❌ OB/BB 영역 내 진입 아님 → 현재가: {current_price}", "aggregated")
-    return False, direction, None
+    LOOKBACK_HTF = 20          # 최근 HTF 존 n개만 검사
+
+    def _in_zone(z):
+        low  = Decimal(str(z['low'])).quantize(tick_size)
+        high = Decimal(str(z['high'])).quantize(tick_size)
+        return (low - buffer) <= current_price <= (high + buffer)
+
+    def zone_dir(z):                     # 존 타입 → 매매방향
+        return 'long' if z['type'] == 'bullish' else 'short'
+
+    # OB
+    if htf_ob:
+        for z in reversed(htf_ob[-LOOKBACK_HTF:]):
+            if _in_zone(z):
+                IN_HTF_ZONE = True
+                trigger_zone = {"kind": "ob_htf", **z}
+                direction = zone_dir(z)          # ★ 존 기반 방향 고정
+                print(f"[DEBUG] Hit HTF-{trigger_zone['kind']}  →  direction set to {direction}")
+                return True, zone_dir(z), trigger_zone   # ★ 바로 진입
+
+    # BB (OB에서 못 찾았을 때만)
+    if (not IN_HTF_ZONE) and htf_bb:
+        for z in reversed(htf_bb[-LOOKBACK_HTF:]):
+            if _in_zone(z):
+                IN_HTF_ZONE = True
+                trigger_zone = {"kind": "bb_htf", **z}
+                direction = zone_dir(z)          # ★ 존 기반 방향 고정
+                print(f"[DEBUG] Hit HTF-{trigger_zone['kind']}  →  direction set to {direction}")
+                return True, zone_dir(z), trigger_zone   # ★ 바로 진입
+
+    if not IN_HTF_ZONE:
+        # HTF 존 자체에 들어오지 않았으면 더 볼 필요 X
+        return False, direction, None
+
+    # ---------------------------------------------------------------------
+    # 3-B)  ❖  LTF 구조 컨펌 (BOS / CHoCH 방향 일치)
+    # ---------------------------------------------------------------------
+    ltf_struct_df = detect_structure(ltf_df)
+    recent_structs = ltf_struct_df['structure'].dropna()
+    if recent_structs.empty:
+        return False, direction, None
+    last_struct = recent_structs.iloc[-1]
+
+    need_long  = last_struct in ('BOS_up', 'CHoCH_up')
+    need_short = last_struct in ('BOS_down', 'CHoCH_down')
+
+    if (direction == 'long'  and not need_long) or \
+       (direction == 'short' and not need_short):
+        # 컨펌 미달 → 아직 진입하지 않음
+        return False, direction, None
+
+    print(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}")
+    send_discord_debug(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}", "aggregated")
+
+    # 여기까지 왔으면 HTF 존 + LTF BOS/CHoCH 모두 OK → 진입
+    return True, direction, trigger_zone

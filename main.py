@@ -1,13 +1,15 @@
 # main.py
 
+import requests
 import sys
 import asyncio
-from decimal import Decimal                # ★ 추가 import
+import builtins                     
+from collections import deque       
+from decimal import Decimal                
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 import pandas as pd
 from core.structure import detect_structure
 # Decimal 변환용 유틸
@@ -48,6 +50,42 @@ if ENABLE_GATE:
 # Discord 알림
 from notify.discord import send_discord_debug, send_discord_message
 
+##########################################################################
+#  콘솔 도배 방지용 dedup-print
+#  ■ '[OB][' 또는 '[BB][' 로 시작하고 'NEW' 가 없는 “요약” 라인은
+#    이미 한 번 찍혔으면 다시 출력하지 않는다
+#  ■ 나머지 메시지(NEW, 구조, 진입/청산, 에러 등)는 그대로 출력
+##########################################################################
+
+_seen_log = deque(maxlen=5000)          # 최근 5 000줄만 기억
+
+def _dedup_print(*args, **kwargs):
+    if not args:                        # 빈 print()
+        builtins.__orig_print__(*args, **kwargs)
+        return
+
+    first = str(args[0])
+
+    # ───────── OB/BB 요약(NEW 없는) ─────────
+    if (first.startswith("[OB][") or first.startswith("[BB][")) and "NEW" not in first:
+        if first in _seen_log:
+            return
+        _seen_log.append(first)
+
+    # ───────── 반복되는 BIAS / IOF 라인 ─────────
+    elif first.startswith("[WARN] price-update failed"):
+        tag = first.split(":")[0] + first.rsplit("→",1)[0]   # 심볼 기준
+        if tag in _seen_log:
+            return
+        _seen_log.append(tag)
+
+    builtins.__orig_print__(*args, **kwargs)
+
+# 한 번만 패치
+if not hasattr(builtins, "__orig_print__"):
+    builtins.__orig_print__ = builtins.print
+    builtins.print = _dedup_print
+
 # ────────────────────────────────────────────────
 # 최소 SL 간격(틱) – 진입 직후 SL 터지는 현상 방지
 # (필요하면 config.settings 로 이동하세요)
@@ -56,6 +94,9 @@ MIN_SL_TICKS = 5
 
 load_dotenv()
 pm = PositionManager()
+import core.data_feed as df
+df.set_pm(pm)          # ← 순환 import 없이 pm 전달
+
 
 # ───────────────────────────── 헬퍼 ─────────────────────────────
 async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
@@ -64,9 +105,30 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     meta   : 최소 {"leverage": …}.  비어 있으면 DEFAULT_LEVERAGE 사용
     """
     leverage = meta.get("leverage", DEFAULT_LEVERAGE)
+
+    # ⚠️ base_sym / is_gate 를 가장 먼저 계산해 둔다
+    is_gate  = "_USDT" in symbol
+    base_sym = symbol.replace("_", "") if is_gate else symbol
+
     # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
     if pm.has_position(symbol):
-        print(f"[SKIP] 내부 포지션 중복 방지 → {symbol}")
+        try:
+            df_ltf = candles.get(base_sym, {}).get(ltf_tf)
+            if df_ltf and len(df_ltf):
+                last_price = float(df_ltf[-1]["close"]      # deque 는 리스트처럼
+                                if isinstance(df_ltf[-1], dict)
+                                else df_ltf["close"].iloc[-1])
+            else:
+                # 🆕 REST fallback – premiumIndex(= mark price) 사용
+                r = requests.get(
+                    f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={base_sym}",
+                    timeout=3
+                ).json()
+                last_price = float(r["markPrice"])
+            pm.update_price(symbol, last_price,
+                            ltf_df=pd.DataFrame(candles.get(base_sym, {}).get(ltf_tf, [])))
+        except Exception as e:
+            print(f"[WARN] price-update failed: {symbol} → {e}")
         return
     # 실시간 확인: Binance + Gate 모두 대응
     live_pos = get_open_position(symbol)
@@ -75,10 +137,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         return
     
     try:
-        # ▸ candle dict 는 항상 Binance 포맷(BTCUSDT) 키 사용
-        is_gate = "_USDT" in symbol
-        base_sym = symbol.replace("_", "") if is_gate else symbol
-
+         # ▸ candle dict 는 항상 Binance 포맷(BTCUSDT) 키 사용
         df_htf = candles.get(base_sym, {}).get(htf_tf)
         df_ltf = candles.get(base_sym, {}).get(ltf_tf)
         if df_htf is None or df_ltf is None or len(df_htf) < 30 or len(df_ltf) < 30:
@@ -131,8 +190,26 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 break
         entry_dec = Decimal(str(entry))
 
-        # ── 공통: tick_size × SL_BUFFER (Decimal) ─────────────────
-        buf_dec = tick_size * Decimal(str(SL_BUFFER))
+        # ── 공통 버퍼 계산 ──────────────────────────────────────────
+        # (1) **기본 버퍼** : 환경 상수 × tick
+        base_buf = tick_size * Decimal(str(SL_BUFFER))
+
+        # (2) **동적 버퍼** : HTF 트리거-존(또는 최근 OB) 폭의 10 %
+        zone_range = None
+        if trg_zone is not None:
+            hi = Decimal(str(trg_zone["high"]))
+            lo = Decimal(str(trg_zone["low"]))
+            zone_range = abs(hi - lo)
+        elif zone is not None:
+            hi = Decimal(str(zone["high"]))
+            lo = Decimal(str(zone["low"]))
+            zone_range = abs(hi - lo)
+
+        if zone_range is not None:
+            dyn_buf = (zone_range * Decimal("0.10")).quantize(tick_size)
+            buf_dec = max(base_buf, dyn_buf)      # ⬅️  둘 중 더 큰 값
+        else:
+            buf_dec = base_buf
 
         # ── 1) ‘트리거 Zone’ 이탈 기준 SL ──
         if trg_zone is not None:
@@ -172,6 +249,16 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             sl_dec = (sl_dec + adj) if direction == "short" else (sl_dec - adj)
             sl_dec = sl_dec.quantize(tick_size)
 
+        # ── 5) **리스크-가드** : 엔트리-SL 간격이 0.03 % 미만이면 강제 확대 ───
+        # Decimal ÷ Decimal → Decimal 로 맞추면 부동소수 오차 ↓
+        min_rr = Decimal("0.0003")            # 0.03 %
+        risk_ratio = (abs(entry_dec - sl_dec) / entry_dec).quantize(Decimal("0.00000001"))
+        if risk_ratio < min_rr:
+            # `adj` 도 Decimal 로 맞추면 바로 `.quantize()` 가능
+            adj = (min_rr * entry_dec - abs(entry_dec - sl_dec)).quantize(tick_size)
+            sl_dec = (sl_dec - adj) if direction == "long" else (sl_dec + adj)
+            sl_dec = sl_dec.quantize(tick_size)
+
         # ── 4) RR 비율 동일하게 TP 산출 ────────────────────────────
         rr_dec = Decimal(str(RR))
         if direction == "long":
@@ -181,6 +268,11 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         sl, tp = float(sl_dec), float(tp_dec)
 
+        # ───────── 디버그 출력 위치 ─────────
+        print(f"[DEBUG][SL-CALC] {symbol} "
+              f"trg={trg_zone} zone={zone} "
+              f"entry={entry:.4f} sl={sl:.4f} tp={tp:.4f}")
+        
         order_ok = False
         if is_gate:
             balance = gate_get_balance()

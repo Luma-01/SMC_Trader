@@ -1,6 +1,7 @@
 # core/structure.py
 
 import pandas as pd
+from core.ob import detect_ob
 from notify.discord import send_discord_debug
 
 last_sent_structure: dict[tuple[str, str], tuple[str, pd.Timestamp]] = {}
@@ -49,6 +50,26 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
     # 마지막 구조만 알림
+    # ────────────────────────────── ★ OB Break 탐지 ──────────────────────────────
+    try:
+        ob_list = detect_ob(df)
+        if ob_list:
+            last_ob   = ob_list[-1]
+            last_px   = df["close"].iloc[-1]
+
+            if last_ob["type"] == "bullish" and last_px < last_ob["low"]:
+                structure_type = "OB_Break_down"
+                structure_time = df["time"].iloc[-1]
+                df.at[df.index[-1], "structure"] = structure_type
+
+            elif last_ob["type"] == "bearish" and last_px > last_ob["high"]:
+                structure_type = "OB_Break_up"
+                structure_time = df["time"].iloc[-1]
+                df.at[df.index[-1], "structure"] = structure_type
+    except Exception:
+        pass
+
+    # ────────────────────────────────────────────────────────────────────────────
     if structure_type and ((structure_type, structure_time) != last_sent_structure.get((symbol, tf))):
         log_msg = f"[STRUCTURE] {symbol} ({tf}) → {structure_type} 발생 | 시각: {structure_time}"
         print(log_msg)
