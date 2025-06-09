@@ -299,7 +299,13 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         if order_ok:
             # pm.enter() 내부에서 SL 주문까지 생성하므로
             # 중복 update_stop_loss() 호출을 제거합니다
-            pm.enter(symbol, direction, entry, sl, tp)
+            basis = None
+            if trg_zone is not None:                 # ← NameError 방지
+                basis = (
+                    f"{trg_zone['kind'].upper()} "
+                    f"{trg_zone['low']}~{trg_zone['high']}"
+                )
+            pm.enter(symbol, direction, entry, sl, tp, basis=basis)
         else:
             print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
             send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")

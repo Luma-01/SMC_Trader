@@ -4,8 +4,14 @@ from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
 from core.monitor import on_entry, on_exit     # ★ 추가
 from notify.discord import send_discord_message, send_discord_debug
-from exchange.router import (update_stop_loss, cancel_order, close_position_market,)       # ★ 실제 청산용
+from exchange.router import (
+    update_stop_loss,
+    update_take_profit,      # ★ NEW
+    cancel_order,
+    close_position_market,
+)
 from core.data_feed import ensure_stream
+from config.settings import RR
 
 class PositionManager:
     def __init__(self):
@@ -34,7 +40,16 @@ class PositionManager:
     def has_position(self, symbol: str) -> bool:
         return symbol in self.positions
 
-    def enter(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
+    # basis: “OB 2800~2850”, “BB_HTF 1.25~1.30” … 등 진입 근거 문자열
+    def enter(
+        self,
+        symbol: str,
+        direction: str,
+        entry: float,
+        sl: float,
+        tp: float,
+        basis: str | None = None,          # ★ NEW
+    ):
         ensure_stream(symbol)
         self.positions[symbol] = {
             "direction": direction,
@@ -60,9 +75,18 @@ class PositionManager:
             print(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}")
             send_discord_debug(f"[SL] 초기 SL 주문 등록 완료 | {symbol} @ {sl:.4f}", "aggregated")
 
-        print(f"[ENTRY] 포지션 등록 완료 | {symbol} → SL: {sl:.4f}, TP: {tp:.4f}")
-        send_discord_message(f"[ENTRY] {symbol} | {direction.upper()} @ {entry:.4f} | SL: {sl:.4f} | TP: {tp:.4f}", "aggregated")
-        send_discord_debug(f"[ENTRY] 포지션 등록 완료 | {symbol} → SL: {sl:.4f}, TP: {tp:.4f}", "aggregated")
+        # ────────── 메시지 구성 ──────────
+        basis_txt = f" | {basis}" if basis else ""
+        msg = (
+            f"[ENTRY] {symbol} | {direction.upper()} @ {entry:.4f} | "
+            f"SL: {sl:.4f} | TP: {tp:.4f}{basis_txt}"
+        )
+
+        # ────────── 중복 알림 차단 ──────────
+        if _ENTRY_CACHE.get(symbol) != msg:
+            _ENTRY_CACHE[symbol] = msg        # 최근 메시지 기억
+            print(msg)
+            send_discord_message(msg, "aggregated")
 
     def update_price(self, symbol: str, current_price: float, ltf_df=None):
         if symbol not in self.positions:
@@ -252,9 +276,8 @@ class PositionManager:
         current_sl = pos['sl']
         protective  = pos.get("protective_level")
 
-        # 절반 익절 이후는 보호선 로직에 맡기므로 생략
-        if pos.get('half_exit'):
-            return
+        # 절반 익절 이후에도 계속 SL 추적
+        # (보호선이 있으면 둘 중 더 보수적인 가격만 채택)
 
         # ─── 최소 거리(리스크-가드) 확보 ───
         min_rr = 0.0003                      # 0.03 %
@@ -266,9 +289,18 @@ class PositionManager:
                 and abs(entry - new_sl) / entry >= min_rr
                 and (protective is None or new_sl > protective)):
                 sl_result = update_stop_loss(symbol, direction, new_sl)
-                if sl_result is not False:
+                if sl_result is not False:                           # Gate=True 허용
                     pos['sl'] = new_sl
-                    pos['sl_order_id'] = sl_result
+                    pos['sl_order_id'] = (
+                        sl_result if isinstance(sl_result, int) else None
+                    )
+                    # ── TP 동시 갱신 ───────────────────────────────
+                    risk      = abs(pos['entry'] - new_sl)
+                    new_tp    = (pos['entry'] + risk * RR
+                                  if direction == "long"
+                                  else pos['entry'] - risk * RR)
+                    if update_take_profit(symbol, direction, new_tp) is not False:
+                        pos['tp'] = float(new_tp)
                     print(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
@@ -281,11 +313,20 @@ class PositionManager:
                 and abs(entry - new_sl) / entry >= min_rr
                 and (protective is None or new_sl < protective)):   # 보호선보다 위험하지 않게
                 sl_result = update_stop_loss(symbol, direction, new_sl)
-                if isinstance(sl_result, int):
+                if sl_result is not False:                           # Gate=True 허용
                     pos['sl'] = new_sl
                     pos['sl_order_id'] = (
                         sl_result if isinstance(sl_result, int) else None
                     )
+                    # ── TP 동시 갱신 ───────────────────────────────
+                    risk      = abs(pos['entry'] - new_sl)
+                    new_tp    = (pos['entry'] + risk * RR
+                                  if direction == "long"
+                                  else pos['entry'] - risk * RR)
+                    if update_take_profit(symbol, direction, new_tp) is not False:
+                        pos['tp'] = float(new_tp)
+
                     print(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
+_ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}

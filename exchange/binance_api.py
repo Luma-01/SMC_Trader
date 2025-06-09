@@ -21,6 +21,8 @@ api_secret = os.getenv("BINANCE_API_SECRET")
 client = Client(api_key, api_secret, tld='com')
 client.API_URL = "https://fapi.binance.com/fapi"
 ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
+ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
+
 
 # ────────────────────────────────────────────────
 # ▸ 선물 **포지션 모드**(One-Way / Hedge) 캐싱
@@ -453,3 +455,71 @@ def calculate_quantity(symbol: str, price: float, usdt_balance: float, leverage:
     except Exception as e:
         print(f"[BINANCE] ❌ 수량 계산 실패: {e}")
         return 0.0
+
+# ─────────────────────────────────────────────────────────────
+#  NEW : TP(리미트) 주문 갱신/재발주   ★
+# ─────────────────────────────────────────────────────────────
+def update_take_profit_order(symbol: str, direction: str, take_price: float):
+    """
+    ▸ 기존 reduce-only LIMIT(TP) 주문을 모두 취소한 뒤  
+      절반 포지션만큼 새 TP 주문을 넣는다.  
+    ▸ 가격은 tickSize 에 맞춰 라운딩.
+    반환값 : 새 주문의 orderId (실패 시 False)
+    """
+    try:
+        _ensure_mode_cached()
+
+        # ① 가격 라운딩
+        tick = get_tick_size(symbol)
+        if direction == "long":
+            tp_dec = Decimal(str(take_price)).quantize(tick, ROUND_UP)
+            side   = SIDE_SELL
+            pos_side = "LONG"
+        else:
+            tp_dec = Decimal(str(take_price)).quantize(tick, ROUND_DOWN)
+            side   = SIDE_BUY
+            pos_side = "SHORT"
+        tp_str = format(tp_dec, "f")
+
+        # ② 포지션 수량 확인
+        pos_info = client.futures_position_information(symbol=symbol)[0]
+        qty_full = abs(float(pos_info["positionAmt"]))
+        if qty_full == 0:
+            return False
+
+        # 기본 정책 : 절반 익절
+        step  = float(get_tick_size(symbol) ** 0)  # = 1.0 (수량 반올림용)
+        prec  = get_quantity_precision(symbol)
+        qty   = round(max(step, qty_full / 2), prec)
+
+        # ③ 기존 reduce-only LIMIT 주문 취소
+        try:
+            for od in client.futures_get_open_orders(symbol=symbol):
+                if od["type"] == ORDER_TYPE_LIMIT and od.get("reduceOnly"):
+                    client.futures_cancel_order(symbol=symbol,
+                                                orderId=od["orderId"])
+        except Exception:
+            pass
+
+        # ④ 새 TP 주문 발행
+        kwargs = dict(
+            symbol      = symbol,
+            side        = side,
+            type        = ORDER_TYPE_LIMIT,
+            price       = tp_str,
+            timeInForce = TIME_IN_FORCE_GTC,
+            quantity    = qty,
+            reduceOnly  = True,
+        )
+        if FUTURES_MODE_HEDGE:
+            kwargs["positionSide"] = pos_side
+
+        res = client.futures_create_order(**kwargs)
+        print(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_str}")
+        send_discord_debug(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_str}", "binance")
+        return res["orderId"]
+
+    except Exception as e:
+        print(f"[ERROR] TP 갱신 실패: {symbol} → {e}")
+        send_discord_debug(f"[ERROR] TP 갱신 실패: {symbol} → {e}", "binance")
+        return False

@@ -1,19 +1,23 @@
 # exchange/router.py
 
+# ───────── Binance ─────────
 from exchange.binance_api import (
     update_stop_loss_order as binance_sl,
+    update_take_profit_order as binance_tp,      # ★ NEW
     get_open_position     as binance_pos,
     get_tick_size         as binance_tick,
-    place_order           as binance_place,   # ⬅︎ 추가
+    place_order           as binance_place,
 )
-# Gate
+# ───────── Gate ───────────
 from exchange.gate_sdk import (
     get_open_position         as gate_pos,
     update_stop_loss_order    as gate_sl,
+    update_take_profit_order  as gate_tp,        # ★ NEW
     normalize_contract_symbol as to_gate,
     get_tick_size             as gate_tick,
-    place_order               as gate_place,   # ⬅︎ 추가
+    place_order               as gate_place,
 )
+from decimal import Decimal
 # Gate 심볼 집합(BTC_USDT 형식) 생성 (미지원 심볼 스킵)
 from config.settings import SYMBOLS_GATE
 GATE_SET = set()
@@ -51,6 +55,31 @@ def update_stop_loss(symbol: str, direction: str, stop_price: float):
     if symbol in GATE_SET:       # Gate 심볼이면
         return gate_sl(symbol, direction, stop_price)
     return binance_sl(symbol, direction, stop_price)
+
+# ==========================================================
+#   NEW : TP(리미트) 가격 수정 라우터
+# ==========================================================
+def update_take_profit(symbol: str, direction: str, take_price: float):
+    """
+    ▸ 이미 존재하는 TP 리미트 주문 가격을 수정  
+    ▸ 없는 경우 새 주문을 생성한다  
+      - Binance : `update_take_profit_order()` 사용  
+      - Gate    : reduce-only LIMIT 주문 재발주 방식
+    """
+    print(f"[router] TP 갱신 요청: {symbol} → {take_price}")
+    try:
+        # ① tickSize 라운드(거래소별 함수에서도 재확인하지만 1차 보정) ★
+        tick = gate_tick(symbol) if symbol in GATE_SET else \
+               binance_tick(symbol.replace("_", ""))
+        take_price = float(Decimal(str(take_price)).quantize(Decimal(str(tick))))
+
+        # ② 거래소별 TP 갱신 함수 호출
+        if symbol in GATE_SET:
+            return gate_tp(symbol, direction, take_price)
+        return binance_tp(symbol, direction, take_price)
+    except Exception as e:
+        print(f"[router] TP 갱신 실패: {e}")
+        return False
     
 def cancel_order(symbol: str, order_id: int):
     if "_USDT" in symbol:

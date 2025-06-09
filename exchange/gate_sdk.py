@@ -448,3 +448,63 @@ def get_tick_size_gate(symbol: str) -> float:
     val = getattr(c, "tick_size", None) or getattr(c, "order_price_round", "0.0001")
     TICK_CACHE[symbol] = float(val)
     return TICK_CACHE[symbol]
+
+# ─────────────────────────────────────────────────────────────
+#  NEW : TP(LIMIT) 주문 갱신/재발주  ★
+# ─────────────────────────────────────────────────────────────
+def update_take_profit_order(symbol: str, direction: str, take_price: float):
+    """
+    Gate.io USDT-Futures  
+    ▸ 기존 reduce-only LIMIT(TP) 주문 취소 후 새로 발행  
+    ▸ 가격은 tickSize 라운딩
+    """
+    try:
+        contract  = normalize_contract_symbol(symbol)
+        tick_dec  = get_tick_size(symbol)
+        tp_dec    = Decimal(str(take_price)).quantize(tick_dec)
+        tp_price  = str(tp_dec)
+
+        # 현 포지션 조회 (없으면 실패)
+        pos = get_open_position(symbol)
+        if not pos:
+            return False
+        qty_full = float(pos["size"])
+        qty_half = qty_full / 2
+
+        # 수량 스텝 반올림
+        step   = float(getattr(CONTRACT_CACHE[contract],
+                               "size_increment",
+                               getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
+        qty_tp = max(step, math.floor(qty_half / step) * step)
+        side_sz = -qty_tp if direction == "long" else qty_tp
+
+        # ① 기존 TP 주문 취소
+        try:
+            for od in futures_api.list_orders(settle="usdt",
+                                              contract=contract,
+                                              status="open"):
+                if od.reduce_only and od.type == "limit":
+                    futures_api.cancel_orders(settle="usdt",
+                                               contract=contract,
+                                               order=od.id)
+        except Exception:
+            pass
+
+        # ② 새 LIMIT 주문
+        tp_order = FuturesOrder(
+            contract    = contract,
+            size        = side_sz,
+            price       = tp_price,
+            tif         = "gtc",
+            reduce_only = True,
+            text        = "t-TP-UPDATE"
+        )
+        futures_api.create_futures_order(settle="usdt", futures_order=tp_order)
+        print(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_price}")
+        send_discord_debug(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_price}", "gateio")
+        return True
+
+    except Exception as e:
+        print(f"[ERROR] TP 갱신 실패: {symbol} → {e}")
+        send_discord_debug(f"[ERROR] TP 갱신 실패: {symbol} → {e}", "gateio")
+        return False
