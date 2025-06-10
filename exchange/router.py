@@ -96,8 +96,21 @@ def get_open_position(symbol: str):
     - symbol: Binance (e.g., BTCUSDT), Gate (e.g., BTC_USDT)
     """
     if "_USDT" in symbol:
-        return gate_pos(symbol)
-    return binance_pos(symbol)
+        try:
+            return gate_pos(symbol)
+        except Exception as e:
+            msg = f"[WARN] Gate 포지션 조회 실패: {symbol} → {e}"
+            print(msg)
+            send_discord_debug(msg, "aggregated")
+            return None
+    else:
+        try:
+            return binance_pos(symbol)
+        except Exception as e:
+            msg = f"[WARN] Binance 포지션 조회 실패: {symbol} → {e}"
+            print(msg)
+            send_discord_debug(msg, "aggregated")
+            return None
 
 def close_position_market(symbol: str):
     """
