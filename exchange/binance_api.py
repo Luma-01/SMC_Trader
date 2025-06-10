@@ -323,7 +323,7 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
             side        = side,
             type        = ORDER_TYPE_STOP_MARKET,
             stopPrice   = stop_str,
-            workingType = "MARK_PRICE",      # ← 즉시 트리거 방지
+            workingType = "CONTRACT_PRICE",      # ← 즉시 트리거 방지
             closePosition = True,
             timeInForce   = TIME_IN_FORCE_GTC,
         )
