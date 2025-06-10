@@ -3,6 +3,7 @@
 from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
 from core.monitor import on_entry, on_exit     # ★ 추가
+from exchange.binance_api import get_mark_price  # ★ 마크 가격 조회
 from notify.discord import send_discord_message, send_discord_debug
 from exchange.router import (
     update_stop_loss,
@@ -172,17 +173,19 @@ class PositionManager:
                     return
 
         # 손절
-        if direction == 'long' and current_price <= sl:
-            print(f"[STOP LOSS] {symbol} LONG @ {current_price:.2f}")
+        # internal SL 체크를 마크 가격 기준으로 변경
+        mark_price = get_mark_price(symbol)
+        if direction == 'long' and mark_price <= sl:
+            print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
             send_discord_message(f"[STOP LOSS] {symbol} LONG @ {current_price:.2f}", "aggregated")
             self.close(symbol)
 
-        elif direction == 'short' and current_price >= sl:
-            print(f"[STOP LOSS] {symbol} SHORT @ {current_price:.2f}")
+        elif direction == 'short' and mark_price >= sl:
+            print(f"[STOP LOSS] {symbol} SHORT @ mark_price={mark_price:.2f}")
             send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {current_price:.2f}", "aggregated")
             self.close(symbol)
 
-        # 절반 익절 (1:2 도달)
+        # 절반 익절 (1:2 도달) — 이 부분은 종전대로 current_price 기준 유지
         elif not half_exit:
             if direction == 'long' and current_price >= tp:
                 print(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}")
