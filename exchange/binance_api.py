@@ -23,6 +23,23 @@ client.API_URL = "https://fapi.binance.com/fapi"
 ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
 ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 
+# ════════════════════════════════════════════════════════
+# get_mark_price: SL 내부 로직용으로 markPrice 가져오기
+# ════════════════════════════════════════════════════════
+def get_mark_price(symbol: str) -> float:
+    """현재 마크 가격(markPrice) 반환. 실패 시 마지막 체결가로 폴백."""
+    try:
+        resp = client.futures_mark_price(symbol=symbol.upper())
+        return float(resp.get("markPrice", resp.get("price", 0)))
+    except Exception as e:
+        print(f"[ERROR] mark price fetch failed: {symbol} → {e}")
+        send_discord_debug(f"[BINANCE] mark price fetch failed: {symbol} → {e}", "binance")
+        # 폴백: ticker 마지막 가격
+        try:
+            tk = client.futures_symbol_ticker(symbol=symbol.upper())
+            return float(tk.get("price", 0))
+        except:
+            return 0.0
 
 # ────────────────────────────────────────────────
 # ▸ 선물 **포지션 모드**(One-Way / Hedge) 캐싱

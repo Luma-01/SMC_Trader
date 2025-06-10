@@ -174,15 +174,16 @@ class PositionManager:
 
         # 손절
         # internal SL 체크를 마크 가격 기준으로 변경
+        # 내부 SL 판단은 mark price 기준으로
         mark_price = get_mark_price(symbol)
         if direction == 'long' and mark_price <= sl:
             print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
-            send_discord_message(f"[STOP LOSS] {symbol} LONG @ {current_price:.2f}", "aggregated")
+            send_discord_message(f"[STOP LOSS] {symbol} LONG @ {mark_price:.2f}", "aggregated")
             self.close(symbol)
 
         elif direction == 'short' and mark_price >= sl:
             print(f"[STOP LOSS] {symbol} SHORT @ mark_price={mark_price:.2f}")
-            send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {current_price:.2f}", "aggregated")
+            send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {mark_price:.2f}", "aggregated")
             self.close(symbol)
 
         # 절반 익절 (1:2 도달) — 이 부분은 종전대로 current_price 기준 유지
