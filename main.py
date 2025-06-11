@@ -111,6 +111,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     base_sym = symbol.replace("_", "") if is_gate else symbol
 
     # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
+    # ① 내부 포지션 이미 보유
     if pm.has_position(symbol):
         try:
             df_ltf = candles.get(base_sym, {}).get(ltf_tf)
@@ -130,6 +131,11 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         except Exception as e:
             print(f"[WARN] price-update failed: {symbol} → {e}")
         return
+    
+    # ② 쿨-다운 중이면 스킵
+    if pm.in_cooldown(symbol):
+        return  
+      
     # 실시간 확인: Binance + Gate 모두 대응
     live_pos = get_open_position(symbol)
     if live_pos and abs(live_pos.get("entry", 0)) > 0:

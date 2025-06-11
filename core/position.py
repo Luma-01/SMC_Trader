@@ -1,5 +1,6 @@
 # core/position.py
 
+import time
 from typing import Dict, Optional
 from core.mss import get_mss_and_protective_low
 from core.monitor import on_entry, on_exit     # ★ 추가
@@ -17,6 +18,16 @@ from config.settings import RR
 class PositionManager:
     def __init__(self):
         self.positions: Dict[str, Dict] = {}
+        # ▸ 마지막 종료 시각 저장  {symbol: epoch sec}
+        self._cooldowns: Dict[str, float] = {}
+
+    # ─────────  쿨-다운  헬퍼  ──────────
+    COOLDOWN_SEC = 300          # ★ 5 분  (원하면 조정)
+
+    def in_cooldown(self, symbol: str) -> bool:
+        """True  → 아직 쿨-다운 시간 미경과"""
+        t = self._cooldowns.get(symbol)
+        return t is not None and (time.time() - t) < self.COOLDOWN_SEC
 
     # 현재 내부에서 '열려-있다'고 간주되는 심볼 리스트
     def active_symbols(self) -> list[str]:
@@ -172,16 +183,26 @@ class PositionManager:
                     self.close(symbol)
                     return
 
-        # 손절
-        # internal SL 체크를 마크 가격 기준으로 변경
-        # 내부 SL 판단은 mark price 기준으로
+        # ───────── 손 절 판 정 ──────────────────────────────
+        # ① 마크 프라이스 사용
+        # ② “한 틱” 이상 뚫린 경우에만 내부-종료
         mark_price = get_mark_price(symbol)
-        if direction == 'long' and mark_price <= sl:
+
+        # → 틱사이즈 확보 (Gate, Binance 모두 대응)
+        try:
+            from exchange.router import get_tick_size as _tick
+            tick = _tick(symbol)
+        except Exception:
+            tick = 0     # 실패 시 0 ⇒ 기존 로직과 동일
+
+        SAFETY_TICKS = 2                 # 2 틱 이상 벗어나야 내부 종료
+
+        if direction == 'long' and mark_price <= sl - tick * SAFETY_TICKS:
             print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
             send_discord_message(f"[STOP LOSS] {symbol} LONG @ {mark_price:.2f}", "aggregated")
             self.close(symbol)
 
-        elif direction == 'short' and mark_price >= sl:
+        elif direction == 'short' and mark_price >= sl + tick * SAFETY_TICKS:
             print(f"[STOP LOSS] {symbol} SHORT @ mark_price={mark_price:.2f}")
             send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {mark_price:.2f}", "aggregated")
             self.close(symbol)
@@ -226,9 +247,11 @@ class PositionManager:
         # SL 주문 취소
         sl_order_id = pos.get("sl_order_id")
         if sl_order_id:
-            cancel_order(symbol, sl_order_id)
-            print(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})")
-            send_discord_debug(f"[SL] 종료 전 SL 주문 취소 | {symbol} (ID: {sl_order_id})", "aggregated")
+            ok = cancel_order(symbol, sl_order_id)
+            if ok is False:                     # -2011 = 이미 체결·삭제
+                print(f"[INFO] {symbol} SL 이미 소멸 → MARKET 청산 생략")
+                self._cooldowns[symbol] = time.time()
+                return                          # ★ 조기 리턴
 
         # ────────────────────────────────
         # 1) 실거래소 포지션 시장가 청산
@@ -246,6 +269,9 @@ class PositionManager:
 
         from datetime import datetime, timezone
         on_exit(symbol, exit_price, datetime.now(timezone.utc))
+
+        # ▸ 쿨-다운 시작
+        self._cooldowns[symbol] = time.time()
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
         self.positions[symbol] = {
