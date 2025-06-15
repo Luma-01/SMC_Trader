@@ -18,6 +18,8 @@ from exchange.gate_sdk import (
     place_order               as gate_place,
 )
 from decimal import Decimal
+# Discord 로깅 (SL/TP·포지션 오류 알림용)  ★ NEW
+from notify.discord import send_discord_debug
 # Gate 심볼 집합(BTC_USDT 형식) 생성 (미지원 심볼 스킵)
 from config.settings import SYMBOLS_GATE
 GATE_SET = set()

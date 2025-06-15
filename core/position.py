@@ -113,9 +113,29 @@ class PositionManager:
         half_exit = pos['half_exit']
         mss_triggered = pos['mss_triggered']
 
-        # (수정) 절반 익절 전이라면 무조건 트레일링-SL 체크
-        # └ MSS 가 이미 발생했더라도 protective level 을 범하지 않게 내부에서 제어
+        # ───────────────────────────────────────────────
+        # ❶ 1차 TP(절반 익절) 달성 여부 **먼저** 확인
+        #    – 트레일링으로 TP 가 올라가기 전에 판정해야
+        #      ‘TP 상승→즉시 익절’ 오류를 방지할 수 있다
+        # ───────────────────────────────────────────────
         if not half_exit:
+            if direction == "long" and current_price >= pos["tp"]:
+                print(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}")
+                send_discord_message(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}", "aggregated")
+                send_discord_debug(f"[DEBUG] {symbol} LONG 1차 익절 완료", "aggregated")
+                pos["half_exit"] = True
+
+            elif direction == "short" and current_price <= pos["tp"]:
+                print(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}")
+                send_discord_message(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}", "aggregated")
+                send_discord_debug(f"[DEBUG] {symbol} SHORT 1차 익절 완료", "aggregated")
+                pos["half_exit"] = True
+
+        # ───────────────────────────────────────────────
+        # ❷ 아직 절반 익절 전이면 → 트레일링 SL/TP 수행
+        #    (MSS 가 이미 발생했어도 내부에서 보호선 범위 체크)
+        # ───────────────────────────────────────────────
+        if not pos["half_exit"]:
             self.try_update_trailing_sl(symbol, current_price)
 
         # MSS 먼저 발생했는지 확인
@@ -128,6 +148,29 @@ class PositionManager:
                 print(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}")
                 send_discord_debug(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}", "aggregated")
 
+                # ─── 보호선 방향·위치 검증 ──────────────────────────────
+                #   LONG  → protective < entry  (저점)
+                #   SHORT → protective > entry  (고점)
+                invalid_protective = (
+                    (direction == "long"  and protective >= entry) or
+                    (direction == "short" and protective <= entry)
+                )
+                if invalid_protective:
+                    print(f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
+                          f"(entry={entry:.4f}, protective={protective:.4f})")
+                    send_discord_debug(
+                        f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
+                        f"(entry={entry:.4f}, protective={protective:.4f})",
+                        "aggregated",
+                    )
+                    # ▸ ❶ 60 초 쿨다운 해시 저장
+                    pos["_mss_skip_until"] = time.time() + 60
+                    # ▸ ❷ 보호선·MSS 플래그 초기화
+                    pos["protective_level"] = None
+                    pos["mss_triggered"]    = False
+                    protective              = None
+                    return                  #   ← 이후 SL 갱신·EARLY-STOP 스킵
+                
                 # 보호선 도달 여부 먼저 체크
                 if ((direction == 'long' and current_price <= protective) or
                     (direction == 'short' and current_price >= protective)):
@@ -207,20 +250,6 @@ class PositionManager:
             send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {mark_price:.2f}", "aggregated")
             self.close(symbol)
 
-        # 절반 익절 (1:2 도달) — 이 부분은 종전대로 current_price 기준 유지
-        elif not half_exit:
-            if direction == 'long' and current_price >= tp:
-                print(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}")
-                send_discord_message(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}", "aggregated")
-                send_discord_debug(f"[DEBUG] {symbol} LONG 1차 익절 완료", "aggregated")
-                pos['half_exit'] = True
-
-            elif direction == 'short' and current_price <= tp:
-                print(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}")
-                send_discord_message(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}", "aggregated")
-                send_discord_debug(f"[DEBUG] {symbol} SHORT 1차 익절 완료", "aggregated")
-                pos['half_exit'] = True
-
         # 절반 익절 이후 보호선 이탈 체크
         elif half_exit and protective:
             if direction == 'long' and current_price <= protective:
@@ -240,10 +269,20 @@ class PositionManager:
         * 여러 곳에서 동시에 호출돼도 안전하도록 idempotent 처리
         * pop() 을 한 번만 호출해 KeyError 방지
         """
-        pos = self.positions.pop(symbol, None)     # ⬅️ 이미 지워졌다면 None
+        # ▸ SL이 이미 트리거돼 포지션이 0 인 경우 MARKET 청산·취소 생략
+        from exchange.router import get_open_position
+        live = get_open_position(symbol)
+        if not live or abs(live.get("entry", 0)) == 0:
+            print(f"[INFO] {symbol} SL 이미 소멸 → MARKET 청산 생략")
+            # 내부 포지션만 제거하고 쿨-다운
+            pos = self.positions.pop(symbol, None)
+            self._cooldowns[symbol] = time.time()
+            return
+        
+        pos = self.positions.pop(symbol, None)
         if pos is None:
             return
-
+        
         # SL 주문 취소
         sl_order_id = pos.get("sl_order_id")
         if sl_order_id:
@@ -311,16 +350,31 @@ class PositionManager:
 
         # ─── 최소 거리(리스크-가드) 확보 ───
         min_rr = 0.0003                      # 0.03 %
+
+        # ▸ 거래소마다 호가 tick 이 달라서 “같은 값 두 번 갱신” 현상이 날 수 있음
+        #     → **2 tick** 이상 차이날 때만 실제 변경으로 간주
+        try:
+            from exchange.router import get_tick_size as _tick
+            tick = _tick(symbol) or 0
+        except Exception:
+            tick = 0
+
         if direction == "long":
             new_sl = current_price * (1 - threshold_pct)
-            if (new_sl > current_sl
+            if (
+                (new_sl - current_sl) > tick * 2                    # 최소 2 tick 위
                 and self.should_update_sl(symbol, new_sl)
-                and (entry := pos['entry'])            # grab once
+                and (entry := pos["entry"])
                 and abs(entry - new_sl) / entry >= min_rr
-                and (protective is None or new_sl > protective)):
+                and (protective is None or new_sl > protective)
+            ):
+                old_sl, old_tp = pos["sl"], pos["tp"]   # ▸ rollback 저장
+
+                pos["sl"] = new_sl                      # ① 선(先)-메모리 갱신
+                # 두 번째 쓰레드는 여기서 diff<=2tick 조건에 걸려 바로 return
+
                 sl_result = update_stop_loss(symbol, direction, new_sl)
-                if sl_result is not False:                           # Gate=True 허용
-                    pos['sl'] = new_sl
+                if sl_result is not False:
                     pos['sl_order_id'] = (
                         sl_result if isinstance(sl_result, int) else None
                     )
@@ -329,22 +383,34 @@ class PositionManager:
                     new_tp    = (pos['entry'] + risk * RR
                                   if direction == "long"
                                   else pos['entry'] - risk * RR)
-                    if update_take_profit(symbol, direction, new_tp) is not False:
+                    # TP 도 2 tick 이상 차이날 때만 재발행
+                    if abs(new_tp - old_tp) > tick * 2 and \
+                       update_take_profit(symbol, direction, new_tp) is not False:
                         pos['tp'] = float(new_tp)
                     print(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
+                else:                       # ★ API 실패 → 값 원복
+                    pos["sl"], pos["tp"] = old_sl, old_tp
+                    return                  # 중복 갱신도 방지
+                
         elif direction == "short":
             # 숏 → “위쪽” = 현재가 + 1 % 
             new_sl = current_price * (1 + threshold_pct)
-            if (new_sl < current_sl
+            if (
+                (current_sl - new_sl) > tick * 2                 # 최소 2 tick 아래
                 and self.should_update_sl(symbol, new_sl)
-                and (entry := pos['entry'])
+                and (entry := pos["entry"])
                 and abs(entry - new_sl) / entry >= min_rr
-                and (protective is None or new_sl < protective)):   # 보호선보다 위험하지 않게
+                and (protective is None or new_sl < protective)   # 보호선보다 위험하지 않게
+            ):
+                old_sl, old_tp = pos["sl"], pos["tp"]   # ▸ rollback 저장
+
+                pos["sl"] = new_sl                      # ① 선(先)-메모리 갱신
+                # 두 번째 쓰레드는 여기서 diff<=2tick 조건에 걸려 바로 return
+
                 sl_result = update_stop_loss(symbol, direction, new_sl)
-                if sl_result is not False:                           # Gate=True 허용
-                    pos['sl'] = new_sl
+                if sl_result is not False:
                     pos['sl_order_id'] = (
                         sl_result if isinstance(sl_result, int) else None
                     )
@@ -353,10 +419,15 @@ class PositionManager:
                     new_tp    = (pos['entry'] + risk * RR
                                   if direction == "long"
                                   else pos['entry'] - risk * RR)
-                    if update_take_profit(symbol, direction, new_tp) is not False:
+                    if abs(new_tp - old_tp) > tick * 2 and \
+                       update_take_profit(symbol, direction, new_tp) is not False:
                         pos['tp'] = float(new_tp)
 
                     print(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
+                else:                       # ★ API 실패 → 값 원복
+                    pos["sl"], pos["tp"] = old_sl, old_tp
+                    return
+                
 _ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}

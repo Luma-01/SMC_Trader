@@ -218,8 +218,9 @@ def place_order_with_tp_sl(
         # ── ② TP / SL 주문 생성 ─────────────────────────
         opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
         # ── TP 수량 산정 ────────────────────────────────
-        half_qty = math.floor((filled_qty / 2) / step) * step
-        half_qty = round(half_qty, prec)
+        half_qty_raw = filled_qty / 2
+        half_qty     = math.floor(half_qty_raw / step) * step
+        half_qty     = round(half_qty, prec)
 
         # stepSize 보다 작으면 → 전량 TP
         if half_qty == 0:
@@ -235,11 +236,9 @@ def place_order_with_tp_sl(
                         break
                 break
 
+        # notional 부족 시 ➜ **전량 TP** 로 대체 (Binance 주문 오류 방지)
         if min_notional_tp and half_qty * float(tp) < min_notional_tp:
-            # notional 부족 → step 단위로 수량 보정
-            half_qty = math.ceil(
-                min_notional_tp / (float(last_price) * step)
-            ) * step
+            half_qty = math.floor(filled_qty / step) * step
             half_qty = round(half_qty, prec)
             
         tp_kwargs = dict(
