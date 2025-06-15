@@ -5,14 +5,26 @@ from binance.client import Client
 from dotenv import load_dotenv
 import os
 from notify.discord import send_discord_debug
-# Gate 관련 모듈은 ENABLE_GATE 가 True 인 경우에만 import
 
 load_dotenv()
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
 
-client = Client(api_key, api_secret, tld='com')
-client.API_URL = "https://fapi.binance.com/fapi"
+# ───────────────────────────────────────────────
+#  거래소 모드 스위치
+#    EXCHANGE_MODE = binance | gate | both
+# ───────────────────────────────────────────────
+EXCHANGE_MODE   = os.getenv("EXCHANGE_MODE", "gate").lower()
+ENABLE_BINANCE  = EXCHANGE_MODE in ("binance", "both")
+ENABLE_GATE     = EXCHANGE_MODE in ("gate",    "both")
+
+# 심볼 테이블은 미리 빈 dict 로 초기화
+SYMBOLS: dict[str, dict] = {}
+
+# Binance 클라이언트는 실제로 사용할 때만 생성
+if ENABLE_BINANCE:
+    api_key    = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    client = Client(api_key, api_secret, tld='com')
+    client.API_URL = "https://fapi.binance.com/fapi"
 
 RR = 2.0
 SL_BUFFER = 0.005
@@ -21,14 +33,16 @@ TIMEFRAMES = ['1m', '5m', '15m', '1h']
 DEFAULT_LEVERAGE = 20
 CUSTOM_LEVERAGES = {}
 
-# ────────────────────────────────────────────────
-# Gate.io 통합 ON/OFF 스위치
-#   False : Binance 전용 모드
-#   True  : Binance + Gate.io 듀얼 모드
-# ────────────────────────────────────────────────
-ENABLE_GATE = False
+# ─────────────────────────────────────────────
+# 💰 한 포지션당 사용-비중 (지갑 총 잔고 대비)
+#   0.10  ==  10 %   /  0.05 ==  5 %
+#   코드 곳곳에서 import 해서 사용합니다.
+# ─────────────────────────────────────────────
+TRADE_RISK_PCT = 0.10
 
 def fetch_max_leverages():
+    if not ENABLE_BINANCE:
+        return {}
     try:
         data = client.futures_leverage_bracket()
         return {
@@ -121,7 +135,32 @@ def fetch_top_symbols(limit: int = TOP_SYMBOL_LIMIT,
 # ──────────────────────────────────────────────────────────────────
 
 # 실행 시 자동 로딩
-SYMBOLS = fetch_top_symbols()
+if ENABLE_GATE and not ENABLE_BINANCE:          # Gate-전용일 때만
+    # 24h 거래량 Top 10 (Gate USDT-Perp)
+    raw = requests.get(
+        "https://fx-api.gateio.ws/api/v4/futures/usdt/tickers"
+    ).json()
+
+    # ▸ 6.97 기준: volume_24h_quote (USDT 환산)  
+    #   └ 하위 호환 위해 다른 키들도 함께 확인
+    def _vol(item: dict) -> float:
+        return float(
+            item.get("volume_usdt")                    # 구버전
+            or item.get("volumeQuote")                 # 일부 레거시
+            or item.get("volume_24h_quote", 0)         # 최신
+        )
+
+    for t in sorted(raw, key=_vol, reverse=True)[:TOP_SYMBOL_LIMIT]:
+        sym = t["contract"]          # e.g. BTC_USDT
+        SYMBOLS[sym] = {
+            "base": sym.split("_")[0],
+            "leverage": DEFAULT_LEVERAGE,
+            "htf": "15m",
+            "ltf": "1m",
+        }
+
+elif ENABLE_BINANCE:                # Binance 전용/듀얼 모두
+    SYMBOLS.update(fetch_top_symbols())
 
 # ───────────────────────────── 추가 ─────────────────────────────
 # 거래소별 심볼 테이블 분리
@@ -131,7 +170,7 @@ SYMBOLS_BINANCE = SYMBOLS       # 그대로 사용
 SYMBOLS_GATE = []               # Gate 지원 심볼 (듀얼 모드에서만 채움)
 
 if ENABLE_GATE:
-    from exchange.gate_sdk import normalize_contract_symbol
+    from exchange.gate_sdk import normalize_contract_symbol   # 🔄 이곳으로 이동
     for sym in SYMBOLS:
         try:
             normalize_contract_symbol(sym)

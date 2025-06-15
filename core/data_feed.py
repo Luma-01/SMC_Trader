@@ -85,8 +85,13 @@ candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
 
 # 1. 과거 캔들 로딩 (REST)
 def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMIT):
+    # Binance REST 는 'BTCUSDT' 형태만 허용
     url = f"{BINANCE_REST_URL}/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    params = {
+        "symbol": symbol.replace("_", ""),   # 'BTC_USDT' → 'BTCUSDT'
+        "interval": interval,
+        "limit": limit
+    }
     response = requests.get(url, params=params)
     data = response.json()
 
@@ -110,7 +115,8 @@ def initialize_historical():
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
             try:
-                data = load_historical_candles(symbol, tf)
+                # REST 호출용(밑줄 제거) ↔ 저장용(원본) 분리
+                data = load_historical_candles(symbol.replace("_", ""), tf)
                 candles[symbol][tf].extend(data)
                 total += 1
             except Exception as e:
@@ -128,7 +134,10 @@ def initialize_historical():
 # 2. 실시간 WebSocket 연결
 async def stream_live_candles():
     stream_pairs = [
-        f"{symbol.replace('_', '').lower()}@kline_{tf}" for symbol in SYMBOLS for tf in TIMEFRAMES]
+        f"{symbol.replace('_', '').lower()}@kline_{tf}"
+        for symbol in SYMBOLS
+        for tf in TIMEFRAMES
+    ]
     url = BINANCE_WS_URL + "/".join(stream_pairs)
 
     async with aiohttp.ClientSession() as session:
@@ -143,11 +152,13 @@ async def stream_live_candles():
                     symbol_tf = stream.split('@kline_')
                     if len(symbol_tf) != 2:
                         continue
-                    stream_symbol = symbol_tf[0].upper()
+                    stream_symbol = symbol_tf[0].upper()           # 'BTCUSDT'
+                    gate_symbol   = stream_symbol.replace("USDT", "_USDT")
                     tf = symbol_tf[1]
                     
-                    # Binance 심볼 그대로 사용; Gate 전용은 별도 매핑으로 처리
-                    symbol = stream_symbol.upper()
+                    # Gate 모드에선 저장 키를 'BTC_USDT' 로 맞춘다
+                    symbol = gate_symbol if gate_symbol in SYMBOLS else stream_symbol
+                    symbol = symbol.upper()
 
                     k = data['k']
                     if not k['x']:  # 캔들 미완성 시 무시

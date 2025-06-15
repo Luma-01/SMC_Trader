@@ -4,6 +4,7 @@ import json
 import os
 from time import time, sleep
 from decimal import Decimal
+from config.settings import TRADE_RISK_PCT
 import requests
 # ------------------------------------------------------------------
 # ❶ 환경/로깅 세팅
@@ -75,10 +76,13 @@ _ensure_contract_cache()
 def set_leverage(symbol: str, leverage: int):
     contract_symbol = normalize_contract_symbol(symbol)
     try:
-        futures_api.update_position_leverage(settle="usdt", contract=contract_symbol, leverage=leverage)
+        # SDK 6.97.x → 세 번째 인자에 정수 레버리지 직접 전달
+        futures_api.update_position_leverage("usdt", contract_symbol, leverage)
     except ApiException as e:
         if "dual mode" in str(e).lower():
-            futures_api.update_dual_mode_position_leverage(settle="usdt", contract=contract_symbol, leverage=leverage)
+            futures_api.update_dual_mode_position_leverage(
+                "usdt", contract_symbol, leverage
+            )
         else:
             raise e
     print(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}")
@@ -115,7 +119,9 @@ def get_open_position(symbol: str, max_wait: float = 15.0, delay: float = 0.5):
     contract_symbol = normalize_contract_symbol(symbol)
     t0 = time()
 
-    while time() - t0 < max_wait:
+    # max_wait ≤ 0  → 단일 조회(논블로킹)
+    first_only = max_wait <= 0
+    while True:
         try:
             # 단일 포지션 조회
             pos = futures_api.get_position(settle="usdt", contract=contract_symbol)
@@ -159,16 +165,20 @@ def get_open_position(symbol: str, max_wait: float = 15.0, delay: float = 0.5):
         except Exception as e:
             print(f"[RETRY] list_positions 오류: {e}")
 
+        if first_only:
+            break          # 한 번만 시도
         sleep(delay)
 
-    print(f"[TIMEOUT] 포지션 entry_price 확인 실패: {symbol}")
+    if not first_only:     # 논블로킹일 땐 조용히 패스
+        print(f"[TIMEOUT] 포지션 entry_price 확인 실패: {symbol}")
     return None
     
 # 사용 가능 잔고 조회 (USDT 기준)
 def get_available_balance() -> float:
     """Gate Futures 계정의 사용 가능 USDT 잔고 조회"""
     try:
-        account = futures_api.list_futures_accounts(settle="usdt")  # ✅ 단일 객체 반환
+        # 6.97.2는 **리스트** 반환 → 첫 요소 사용
+        account = futures_api.list_futures_accounts("usdt")[0]
         return float(account.available)
     except Exception as e:
         print(f"[GATE] 잔고 조회 실패: {e}")
@@ -198,6 +208,17 @@ def normalize_contract_symbol(symbol: str) -> str:
     if normalized not in CONTRACT_CACHE:
         raise ValueError(f"❌ 지원되지 않는 Gate 심볼: {symbol}")
     return normalized
+
+# ────────────────────────────────
+# Binance 심볼 → Gate 심볼 변환
+#   'BTCUSDT' → 'BTC_USDT'
+# ────────────────────────────────
+def to_gate_symbol(symbol: str) -> str:
+    """Binance 형식을 Gate 형식으로 변환 (이미 Gate 형식이면 그대로)."""
+    return symbol if symbol.endswith("_USDT") else symbol.replace("USDT", "_USDT")
+
+# 레거시 별칭
+to_gate = to_gate_symbol
 
 # TP/SL 포함 주문
 def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: float, leverage: int = 20):
@@ -310,33 +331,22 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         tick = get_tick_size(symbol)
         normalized_stop = float(Decimal(str(stop_price)).quantize(tick))
 
-        # ──────────────────────────────────────────────
-        #  Gate v4 SL 트리거 주문
-        #   · initial      : False  (갱신)
-        #   · trigger_price: 필수
-        #   · price_type   : 1 = MarkPrice  (2 = LastPrice)
-        # ──────────────────────────────────────────────
+        # SDK 6.97.2:  rule/trigger 필드 사용, 내부 order-object 없이 직접 지정
         trigger = FuturesPriceTriggeredOrder(
-            initial=False,
-            trigger_price=str(normalized_stop),
-            price_type=1,
-            order=FuturesOrder(
-                contract=contract,  # ✅ 반드시 필요
-                size=size if direction == "long" else -size,
-                price="0",
-                tif="ioc",
-                reduce_only=True,
-                close=True,
-                text="t-SL-UPDATE"
-            )
+            contract=contract,
+            trigger=str(normalized_stop),
+            rule=2 if direction == "long" else 1,   # 2 (≤) LONG / 1 (≥) SHORT
+            order_type="market",           # ≤ long / ≥ short (rule 로 결정)
+            price="0",                     # market → price 무시돼도 필요
+            # Gate: 양수 = 매수, 음수 = 매도
+            # 롱 포지션 청산 → 매도(−), 숏 포지션 청산 → 매수(+)
+            size=-size if direction == "long" else size,
+            tif="ioc",
+            reduce_only=True,
+            text="t-SL-UPDATE"
         )
 
-
-        futures_api.create_price_triggered_order(
-            settle="usdt",
-            contract=contract,  # 여기서 전달
-            price_triggered_order=trigger
-        )
+        futures_api.create_price_triggered_order("usdt", trigger)
 
         msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {stop_price}"
         print(msg)
@@ -388,7 +398,7 @@ def calculate_quantity_gate(
     price: float,
     usdt_balance: float,
     leverage: int = 10,
-    risk_ratio: float = 0.30,
+    risk_ratio: float = TRADE_RISK_PCT,
 ) -> float:
     """
     ▸ `risk_ratio` = 사용할 증거금 비율 (예: 0.30 → 30 %)
@@ -484,9 +494,12 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
                                               contract=contract,
                                               status="open"):
                 if od.reduce_only and od.type == "limit":
-                    futures_api.cancel_orders(settle="usdt",
-                                               contract=contract,
-                                               order=od.id)
+                    # 6.97.x ⇒ 3-번째 인자는 order_id (키워드 X)
+                    futures_api.cancel_orders(
+                        "usdt",            # settle
+                        contract,          # contract
+                        od.id              # order_id
+                    )
         except Exception:
             pass
 

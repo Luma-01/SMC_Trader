@@ -14,28 +14,34 @@ import pandas as pd
 from core.structure import detect_structure
 # Decimal 변환용 유틸
 from decimal import Decimal
+from notify.discord import send_discord_debug, send_discord_message
 from config.settings import (
     SYMBOLS,
+    SYMBOLS_BINANCE,
     SYMBOLS_GATE,
     RR,
     SL_BUFFER,
     DEFAULT_LEVERAGE,
-    ENABLE_GATE,          # ★ 추가
+    ENABLE_GATE,
+    ENABLE_BINANCE,
 )
 from core.data_feed import candles, initialize_historical, stream_live_candles
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
-from exchange.router import get_open_position
-from exchange.binance_api import place_order_with_tp_sl as binance_order_with_tp_sl
-from exchange.binance_api import get_tick_size, calculate_quantity
-from exchange.binance_api import (
-    set_leverage,
-    get_max_leverage,
-    get_available_balance,
-    get_open_position as binance_pos,   # ★ 복원
-)
+# ────────────── 모드별 import ──────────────
+from exchange.router import get_open_position     # (Gate·Binance 공용)
+
+if ENABLE_BINANCE:
+    from exchange.binance_api import (
+        place_order_with_tp_sl as binance_order_with_tp_sl,
+        get_total_balance,
+        get_tick_size, calculate_quantity,
+        set_leverage, get_max_leverage,
+        get_available_balance,
+        get_open_position as binance_pos,
+    )
 # Gate.io 연동은 ENABLE_GATE 가 True 일 때만 임포트
 if ENABLE_GATE:
     from exchange.gate_sdk import (
@@ -44,11 +50,9 @@ if ENABLE_GATE:
         set_leverage as gate_set_leverage,
         get_available_balance as gate_get_balance,
         get_tick_size as get_tick_size_gate,
-        calculate_quantity as calculate_quantity_gate,
+        calculate_quantity_gate as calculate_quantity_gate,
         to_gate_symbol as to_gate,        # ← 실제 함수명이 다르면 맞춰 주세요
     )
-# Discord 알림
-from notify.discord import send_discord_debug, send_discord_message
 
 ##########################################################################
 #  콘솔 도배 방지용 dedup-print
@@ -136,8 +140,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     if pm.in_cooldown(symbol):
         return  
       
-    # 실시간 확인: Binance + Gate 모두 대응
-    live_pos = get_open_position(symbol)
+    # 실시간 확인 (논블로킹, 1 회 시도)
+    live_pos = get_open_position(symbol, 0, 0)
     if live_pos and abs(live_pos.get("entry", 0)) > 0:
         print(f"[SKIP] 실시간 포지션 확인됨 → {symbol}")
         return
@@ -293,7 +297,13 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 qty, tp, sl, leverage
             )
         else:
-            qty = calculate_quantity(symbol, entry, get_available_balance(), leverage)
+            # ⚠️  진입 비중 = “총 잔고 10 %”
+            qty = calculate_quantity(
+                symbol,
+                entry,
+                get_total_balance(),         # ← 전체 시드 전달
+                leverage,
+            )
             if qty <= 0:
                 return
             order_ok = binance_order_with_tp_sl(
@@ -335,24 +345,40 @@ def initialize():
     send_discord_message("🚀 [INIT] 초기 세팅 시작", "aggregated")
     initialize_historical()
     failed_positions = []
-    failed_leverage = []
-    for symbol, data in SYMBOLS.items():
-        try:
-            pos = binance_pos(symbol)
-            if pos and 'entry' in pos and 'direction' in pos:
-                sl, tp = calculate_sl_tp(pos['entry'], pos['direction'], SL_BUFFER, RR)
-                pm.init_position(symbol, pos['direction'], pos['entry'], sl, tp)
-            # 포지션이 없으면 Quiet 패스
-        except Exception:
-            failed_positions.append(symbol)
-        try:
-            max_lev = get_max_leverage(symbol)
-            req_lev = data['leverage']
-            applied_lev = min(req_lev, max_lev)
-            set_leverage(symbol, applied_lev)
-        except Exception as e:
-            print(f"[WARN] 레버리지 설정 실패: {symbol} → {e}")
-            failed_leverage.append(symbol)
+    failed_leverage  = []
+
+    # ─── Binance 초기화 ─────────────────────────
+    if ENABLE_BINANCE:
+        for symbol, data in SYMBOLS_BINANCE.items():
+            # ── 포지션 동기화 ──
+            try:
+                pos = binance_pos(symbol)
+                if pos and 'entry' in pos and 'direction' in pos:
+                    sl, tp = calculate_sl_tp(
+                        pos['entry'], pos['direction'], SL_BUFFER, RR
+                    )
+                    pm.init_position(symbol, pos['direction'], pos['entry'], sl, tp)
+            except Exception:
+                failed_positions.append(symbol)
+
+            # ── 레버리지 세팅 ──
+            try:
+                max_lev   = get_max_leverage(symbol)
+                req_lev   = data['leverage']
+                applied   = min(req_lev, max_lev)
+                set_leverage(symbol, applied)
+            except Exception as e:
+                print(f"[WARN] 레버리지 설정 실패: {symbol} → {e}")
+                failed_leverage.append(symbol)
+
+    # ─── Gate 초기화 ───────────────────────────
+    if ENABLE_GATE:
+        for symbol in SYMBOLS_GATE:
+            try:
+                gate_set_leverage(symbol, DEFAULT_LEVERAGE)
+            except Exception as e:
+                print(f"[WARN] Gate 레버리지 설정 실패: {symbol} → {e}")
+                failed_leverage.append(symbol)
 
     if failed_positions:
         warn_msg = f"⚠️ 포지션 조회 실패: {', '.join(failed_positions)}"
@@ -367,8 +393,9 @@ async def strategy_loop():
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
         # ───── Binance 스윙 1h→5m ─────
-        for symbol, meta in SYMBOLS.items():
-            await handle_pair(symbol, meta, "1h", "5m")
+        if ENABLE_BINANCE:
+            for symbol, meta in SYMBOLS_BINANCE.items():
+                await handle_pair(symbol, meta, "1h", "5m")
 
         # ───── Binance 단타 15m→1m (테스트) ─────
         #for symbol, meta in SYMBOLS.items():

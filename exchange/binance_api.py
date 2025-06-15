@@ -3,6 +3,7 @@
 import os
 import math
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from config.settings import TRADE_RISK_PCT
 from typing import Optional
 from dotenv import load_dotenv
 from notify.discord import send_discord_debug, send_discord_message
@@ -389,7 +390,11 @@ def cancel_order(symbol: str, order_id: int):
         send_discord_debug(f"[BINANCE] 주문 취소 실패: {symbol} → {e}", "binance")
         return False
         
-# ✅ 사용 가능 잔고 조회 (USDT 기준)
+# ════════════════════════════════════════════════════════
+#  잔고 관련 유틸
+# ════════════════════════════════════════════════════════
+# ✅ ① ‘사용 가능’(free) 잔고 – 기존 함수 유지
+
 def get_available_balance() -> float:
     try:
         balance = client.futures_account_balance()
@@ -399,6 +404,24 @@ def get_available_balance() -> float:
     except BinanceAPIException as e:
         print(f"[BINANCE] 잔고 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] 잔고 조회 실패 → {e}", "binance")
+    return 0.0
+
+
+# ✅ ② ‘전체’(free + 포지션증거금) 잔고 – 새로 추가
+def get_total_balance() -> float:
+    """
+    포지션 증거금을 포함한 **지갑 총 잔고**(USDT) 반환  
+    futures_account_balance() 리턴 값 중  
+    └ availableBalance = free,   balance = free + margin
+    """
+    try:
+        balance = client.futures_account_balance()
+        for asset in balance:
+            if asset["asset"] == "USDT":
+                return float(asset["balance"])          # ← 전체
+    except BinanceAPIException as e:
+        print(f"[BINANCE] 총 잔고 조회 실패: {e}")
+        send_discord_debug(f"[BINANCE] 총 잔고 조회 실패 → {e}", "binance")
     return 0.0
 
 
@@ -433,10 +456,16 @@ def get_tick_size(symbol: str) -> Decimal:
         send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
     return Decimal("0.0001")
 
-def calculate_quantity(symbol: str, price: float, usdt_balance: float, leverage: int = 10) -> float:
+def calculate_quantity(
+    symbol: str,
+    price: float,
+    usdt_balance: float,
+    leverage: int = 10,
+) -> float:
     try:
-        risk_ratio = 0.3  # ✅ 시드의 30%만 진입
-        notional = usdt_balance * leverage * risk_ratio
+        # ────────────────  진입 비중 설정  ────────────────
+        # settings.TRADE_RISK_PCT 를 단일-소스로 사용
+        notional = usdt_balance * leverage * TRADE_RISK_PCT
         raw_qty = notional / price
 
         # stepSize / notional 최소값 가져오기

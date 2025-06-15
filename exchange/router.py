@@ -92,27 +92,25 @@ def cancel_order(symbol: str, order_id: int):
         from exchange.binance_api import cancel_order as binance_cancel_order
         return binance_cancel_order(symbol, order_id)
 
-def get_open_position(symbol: str):
+def get_open_position(symbol: str, *args, **kwargs):
     """
-    실시간 포지션 확인 라우터
-    - symbol: Binance (e.g., BTCUSDT), Gate (e.g., BTC_USDT)
+    통합 포지션 조회 헬퍼
+
+    ▸ Gate `get_open_position()` 은 (symbol, max_wait=…, delay=…) 형태를 지원합니다.  
+    ▸ Binance 버전은 (symbol) 하나만 받으므로, 전달된 추가 인자는 **무시**합니다.
     """
-    if "_USDT" in symbol:
-        try:
-            return gate_pos(symbol)
-        except Exception as e:
-            msg = f"[WARN] Gate 포지션 조회 실패: {symbol} → {e}"
-            print(msg)
-            send_discord_debug(msg, "aggregated")
-            return None
-    else:
-        try:
-            return binance_pos(symbol)
-        except Exception as e:
-            msg = f"[WARN] Binance 포지션 조회 실패: {symbol} → {e}"
-            print(msg)
-            send_discord_debug(msg, "aggregated")
-            return None
+    try:
+        if "_USDT" in symbol:                       # Gate 선물 심볼
+            return gate_pos(symbol, *args, **kwargs)
+        # Binance 심볼 → 여분 인자는 사용하지 않음
+        return binance_pos(symbol)
+
+    except Exception as e:
+        exch = "Gate" if "_USDT" in symbol else "Binance"
+        msg  = f"[WARN] {exch} 포지션 조회 실패: {symbol} → {e}"
+        print(msg)
+        send_discord_debug(msg, "aggregated")
+        return None
 
 def close_position_market(symbol: str):
     """
