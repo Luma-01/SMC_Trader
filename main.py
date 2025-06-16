@@ -25,7 +25,7 @@ from config.settings import (
     ENABLE_GATE,
     ENABLE_BINANCE,
 )
-from core.data_feed import candles, initialize_historical, stream_live_candles
+from core.data_feed import candles, initialize_historical, start_data_feed
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
@@ -458,7 +458,7 @@ async def reconcile_internal_with_live():
 async def main():
     initialize()
     await asyncio.gather(
-        stream_live_candles(),
+        start_data_feed(),   # 🌟 Binance + Gate 동시 실행
         strategy_loop()
     )
 
