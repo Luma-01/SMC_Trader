@@ -2,7 +2,6 @@
 
 import aiohttp
 import asyncio
-import time
 import requests
 from collections import defaultdict, deque
 from datetime import datetime
@@ -194,7 +193,7 @@ async def stream_live_candles_gate():
     if not ENABLE_GATE:
         return
 
-    gate_symbols = [s for s in SYMBOLS if s.endswith(\"_USDT\")]
+    gate_symbols = [s for s in SYMBOLS if s.endswith("_USDT")]
     if not gate_symbols:
         return
 
@@ -204,33 +203,33 @@ async def stream_live_candles_gate():
             for sym in gate_symbols:
                 for tf in TIMEFRAMES:
                     sub = {
-                        \"time\": 0,
-                        \"channel\": \"futures.candlesticks\",
-                        \"event\": \"subscribe\",
-                        \"payload\": [tf, sym]
+                        "time": 0,
+                        "channel": "futures.candlesticks",
+                        "event": "subscribe",
+                        "payload": [tf, sym],
                     }
                     await ws.send_json(sub)
-            print(\"✅ [WS] Gate WebSocket 연결·구독 성공!\")
+            print("✅ [WS] Gate WebSocket 연결·구독 성공!")
 
             async for msg in ws:
                 data = json.loads(msg.data)
-                if data.get(\"channel\") != \"futures.candlesticks\" or data.get(\"event\") != \"update\":
+                if data.get("channel") != "futures.candlesticks" or data.get("event") != "update":
                     continue
 
-                # payload: [tf, \"BTC_USDT\", [ts, o, h, l, c, v]]
-                tf, sym, k = data[\"result\"]
+                # payload: [tf, "BTC_USDT", [ts, o, h, l, c, v]]
+                tf, sym, k = data["result"]
                 candle = {
-                    \"time\":   datetime.fromtimestamp(k[0] / 1000),
-                    \"open\":   float(k[1]),
-                    \"high\":   float(k[2]),
-                    \"low\":    float(k[3]),
-                    \"close\":  float(k[4]),
-                    \"volume\": float(k[5])
+                    "time":   datetime.fromtimestamp(k[0] / 1000),
+                    "open":   float(k[1]),
+                    "high":   float(k[2]),
+                    "low":    float(k[3]),
+                    "close":  float(k[4]),
+                    "volume": float(k[5])
                 }
                 candles[sym][tf].append(candle)
-                if pm and tf == \"1m\" and pm.has_position(sym):
+                if pm and tf == "1m" and pm.has_position(sym):
                     ltf_df = pd.DataFrame(candles[sym][tf])
-                    pm.update_price(sym, candle[\"close\"], ltf_df=ltf_df)
+                    pm.update_price(sym, candle["close"], ltf_df=ltf_df)
 
 # 3. 초기 로딩 + WS 병렬 실행
 async def start_data_feed():
