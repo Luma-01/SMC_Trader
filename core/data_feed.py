@@ -6,7 +6,8 @@ import time
 import requests
 from collections import defaultdict, deque
 from datetime import datetime
-from config.settings import SYMBOLS, TIMEFRAMES, CANDLE_LIMIT
+from config.settings import SYMBOLS, TIMEFRAMES, CANDLE_LIMIT, ENABLE_GATE
+import json                        # 🌟 Gate WS 메시지 파싱용
 from notify.discord import send_discord_debug
 import pandas as pd
 import threading
@@ -77,8 +78,12 @@ def set_pm(manager):
     pm = manager
 
 
+# ----------------------------------------------- REST / WS End-points
 BINANCE_REST_URL = "https://api.binance.com"
-BINANCE_WS_URL = "wss://stream.binance.com:9443/stream?streams="
+BINANCE_WS_URL   = "wss://stream.binance.com:9443/stream?streams="
+# Gate Futures v4 USDT-settled WS
+GATE_WS_URL      = "wss://fx-ws.gateio.ws/v4/ws/usdt"
+
 
 # 캔들 저장소: {symbol: {timeframe: deque}}
 candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
@@ -131,8 +136,8 @@ def initialize_historical():
     print(msg)
     send_discord_debug(msg, "binance")
 
-# 2. 실시간 WebSocket 연결
-async def stream_live_candles():
+# 2-A. Binance 실시간 WebSocket
+async def stream_live_candles_binance():
     stream_pairs = [
         f"{symbol.replace('_', '').lower()}@kline_{tf}"
         for symbol in SYMBOLS
@@ -187,4 +192,54 @@ async def stream_live_candles():
 # 메인 실행 함수 (초기 로딩 + 실시간 연결)
 async def start_data_feed():
     initialize_historical()
-    await stream_live_candles()
+    
+# 2-B. Gate 실시간 WebSocket  (futures.candlesticks)
+async def stream_live_candles_gate():
+    if not ENABLE_GATE:
+        return
+
+    gate_symbols = [s for s in SYMBOLS if s.endswith(\"_USDT\")]
+    if not gate_symbols:
+        return
+
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(GATE_WS_URL) as ws:
+            # 구독 메시지 일괄 전송
+            for sym in gate_symbols:
+                for tf in TIMEFRAMES:
+                    sub = {
+                        \"time\": 0,
+                        \"channel\": \"futures.candlesticks\",
+                        \"event\": \"subscribe\",
+                        \"payload\": [tf, sym]
+                    }
+                    await ws.send_json(sub)
+            print(\"✅ [WS] Gate WebSocket 연결·구독 성공!\")
+
+            async for msg in ws:
+                data = json.loads(msg.data)
+                if data.get(\"channel\") != \"futures.candlesticks\" or data.get(\"event\") != \"update\":
+                    continue
+
+                # payload: [tf, \"BTC_USDT\", [ts, o, h, l, c, v]]
+                tf, sym, k = data[\"result\"]
+                candle = {
+                    \"time\":   datetime.fromtimestamp(k[0] / 1000),
+                    \"open\":   float(k[1]),
+                    \"high\":   float(k[2]),
+                    \"low\":    float(k[3]),
+                    \"close\":  float(k[4]),
+                    \"volume\": float(k[5])
+                }
+                candles[sym][tf].append(candle)
+                if pm and tf == \"1m\" and pm.has_position(sym):
+                    ltf_df = pd.DataFrame(candles[sym][tf])
+                    pm.update_price(sym, candle[\"close\"], ltf_df=ltf_df)
+
+# 3. 초기 로딩 + WS 병렬 실행
+async def start_data_feed():
+    initialize_historical()
+    await asyncio.gather(
+        stream_live_candles_binance(),
+        stream_live_candles_gate()
+    )
