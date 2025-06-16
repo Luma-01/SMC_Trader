@@ -188,10 +188,6 @@ async def stream_live_candles_binance():
             msg = f"❌ [BINANCE] WebSocket 연결 실패: {e}"
             print(msg)
             send_discord_debug(msg, "binance")
-
-# 메인 실행 함수 (초기 로딩 + 실시간 연결)
-async def start_data_feed():
-    initialize_historical()
     
 # 2-B. Gate 실시간 WebSocket  (futures.candlesticks)
 async def stream_live_candles_gate():
