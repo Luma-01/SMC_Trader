@@ -129,6 +129,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                     f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={base_sym}",
                     timeout=3
                 ).json()
+                
                 last_price = float(r["markPrice"])
             pm.update_price(symbol, last_price,
                             ltf_df=pd.DataFrame(candles.get(base_sym, {}).get(ltf_tf, [])))
@@ -345,7 +346,8 @@ def initialize():
     send_discord_message("🚀 [INIT] 초기 세팅 시작", "aggregated")
     initialize_historical()
     failed_positions = []
-    failed_leverage  = []
+    gate_leverage_ok   = []
+    failed_leverage    = []
 
     # ─── Binance 초기화 ─────────────────────────
     if ENABLE_BINANCE:
@@ -375,10 +377,23 @@ def initialize():
     if ENABLE_GATE:
         for symbol in SYMBOLS_GATE:
             try:
-                gate_set_leverage(symbol, DEFAULT_LEVERAGE)
+                # quiet=True ⇒ 개별 성공 로그 생략
+                gate_set_leverage(symbol, DEFAULT_LEVERAGE, quiet=True)
+                gate_leverage_ok.append(symbol)
             except Exception as e:
-                print(f"[WARN] Gate 레버리지 설정 실패: {symbol} → {e}")
                 failed_leverage.append(symbol)
+
+    # ─── 레버리지 결과 요약 한 줄 출력 ──────────────────────
+    if ENABLE_GATE:
+        lev_used = f"{DEFAULT_LEVERAGE}배"
+        ok_cnt   = len(gate_leverage_ok)
+        fail_cnt = len(failed_leverage)
+        ok_sym   = ", ".join(gate_leverage_ok)
+        fail_sym = ", ".join(failed_leverage)
+        print(f"[GATE] 레버리지 {lev_used}: ✅ 성공 {ok_cnt}개 / ❌ 실패 {fail_cnt}개")
+        if fail_cnt:
+            print(f"       실패 심볼 → {fail_sym}")
+        send_discord_debug(f"[GATE] 레버리지{lev_used} 설정: OK={ok_cnt}, FAIL={fail_cnt}","gateio")
 
     if failed_positions:
         warn_msg = f"⚠️ 포지션 조회 실패: {', '.join(failed_positions)}"

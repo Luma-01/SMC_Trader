@@ -73,7 +73,8 @@ def _ensure_contract_cache():
 
 _ensure_contract_cache()
 
-def set_leverage(symbol: str, leverage: int):
+# quiet=True ⇒ 성공 로그 생략, 실패만 경고
+def set_leverage(symbol: str, leverage: int, *, quiet: bool = False):
     contract_symbol = normalize_contract_symbol(symbol)
     try:
         # SDK 6.97.x → 세 번째 인자에 정수 레버리지 직접 전달
@@ -85,8 +86,10 @@ def set_leverage(symbol: str, leverage: int):
             )
         else:
             raise e
-    print(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}")
-    send_discord_debug(f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}", "gateio")
+    if not quiet:
+        msg = f"[GATE] 레버리지 설정 완료: {symbol} → x{leverage}"
+        print(msg)
+        send_discord_debug(msg, "gateio")
     return True
 
 def place_order(symbol: str, side: str, size: float, leverage: int = 20):

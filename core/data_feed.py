@@ -4,7 +4,8 @@ import aiohttp
 import asyncio
 import requests
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+# settings 에서 Gate 사용 여부도 같이 가져옴
 from config.settings import SYMBOLS, TIMEFRAMES, CANDLE_LIMIT, ENABLE_GATE
 import json                        # 🌟 Gate WS 메시지 파싱용
 from notify.discord import send_discord_debug
@@ -88,7 +89,10 @@ GATE_WS_URL      = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
 
 # 1. 과거 캔들 로딩 (REST)
-def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMIT):
+# ─────────────────────────── Binance 전용 ───────────────────────────
+def load_historical_candles_binance(
+    symbol: str, interval: str, limit: int = CANDLE_LIMIT
+):
     # Binance REST 는 'BTCUSDT' 형태만 허용
     url = f"{BINANCE_REST_URL}/api/v3/klines"
     params = {
@@ -96,7 +100,7 @@ def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMI
         "interval": interval,
         "limit": limit
     }
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=5)
     data = response.json()
 
     if not isinstance(data, list) or len(data) == 0:
@@ -113,27 +117,129 @@ def load_historical_candles(symbol: str, interval: str, limit: int = CANDLE_LIMI
         } for d in data
     ]
 
+# ─────────────────────────── Gate 전용 ──────────────────────────────
+def load_historical_candles_gate(
+    contract: str, interval: str, limit: int = CANDLE_LIMIT
+):
+    """
+    Gate v4  선물 캔들 엔드포인트  
+      GET /futures/usdt/candlesticks?contract=BTC_USDT&interval=1m&limit=150
+    """
+    url = "https://fx-api.gateio.ws/api/v4/futures/usdt/candlesticks"
+    # ---- 공통 헤더 ------------------------------------------------
+    _HDR = {
+        "User-Agent": "Mozilla/5.0 (SMC-Trader)",
+        "Accept":     "application/json",
+    }
+
+    step_sec = {
+        "1m": 60, "5m": 300, "15m": 900,
+        "1h": 3600, "4h": 14400, "1d": 86400
+    }[interval]
+    now_sec   = int(datetime.now(timezone.utc).timestamp())
+    from_sec  = now_sec - step_sec * limit
+
+    # ── ① 첫 번째 시도: limit만 ─────────────────────────────
+    params = {
+        "contract": contract,
+        "interval": interval,
+        "limit":    limit,
+    }
+    resp  = requests.get(url, params=params, headers=_HDR, timeout=5)
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+
+    # 빈 배열이면 ② from/to 재시도 (limit 제거) ───────────────
+    if isinstance(data, list) and not data:
+        params = {
+            "contract": contract,
+            "interval": interval,
+            "from":     from_sec,
+            "to":       now_sec,     # ← limit 없이 from-to 범위 지정
+        }
+        resp  = requests.get(url, params=params, headers=_HDR, timeout=5)
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+
+
+    # ---- 실패 처리 -----------------------------------------------
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code} – {resp.text[:200]}...")
+    if not isinstance(data, list) or len(data) == 0:
+        raise ValueError("빈 응답")
+    # ----------------------------------------------------------------
+
+    out = []
+    for d in data:
+        # v4 API 응답이 `list` ↔ `dict` 모두 섞여 들어올 수 있음
+        if isinstance(d, list):                # ▶ 전통적인 배열
+            ts, o, h, l, c, v = d[:6]
+        elif isinstance(d, dict):              # ▶ 키-값 포맷
+            ts = int(d.get("t") or d.get("timestamp"))
+            o  = d.get("o") or d["open"]
+            h  = d.get("h") or d["high"]
+            l  = d.get("l") or d["low"]
+            c  = d.get("c") or d["close"]
+            v  = d.get("v") or d.get("volume") or 0   # ← volume 누락 시 0 으로
+        else:                                  # 예외-케이스 방어
+            continue
+
+        out.append(
+            {
+                "time":   datetime.fromtimestamp(int(ts)),
+                "open":   float(o),
+                "high":   float(h),
+                "low":    float(l),
+                "close":  float(c),
+                "volume": float(v),
+            }
+        )
+    return out
+
 def initialize_historical():
-    failed = []
-    total = 0
+    # ✔︎ 거래소별 집계
+    ok_bi = ok_ga = 0
+    fail_bi: list[str] = []
+    fail_ga: list[str] = []
     for symbol in SYMBOLS:
         for tf in TIMEFRAMES:
             try:
-                # REST 호출용(밑줄 제거) ↔ 저장용(원본) 분리
-                data = load_historical_candles(symbol.replace("_", ""), tf)
+                if ENABLE_GATE and symbol.endswith("_USDT"):
+                    data = load_historical_candles_gate(symbol, tf)
+                    ok_ga += 1
+                else:
+                    data = load_historical_candles_binance(symbol.replace("_", ""), tf)
+                    ok_bi += 1
+
                 candles[symbol][tf].extend(data)
-                total += 1
-            except Exception as e:
-                failed.append(f"{symbol}-{tf}")
-                send_discord_debug(f"❌ [BINANCE] 캔들 로딩 실패: {symbol}-{tf} → {e}", "binance")
-    msg = (
-        f"📊 [BINANCE] 캔들 로딩 완료\n"
-        f" - 총 요청: {total}\n"
-        f" - 실패: {len(failed)}\n"
-        f" - 실패 목록: {', '.join(failed) if failed else '없음'}"
-    )
+            except Exception as e:                        # ← 실패 처리
+                tag = f"{symbol}-{tf} ({repr(e)})"        # 내용 전체 보이도록
+                if symbol.endswith("_USDT"):
+                    fail_ga.append(tag)
+                else:
+                    fail_bi.append(tag)
+
+                # 상세 원인을 콘솔·디스코드에 즉시 출력
+                print(f"[HIST] FAIL → {tag}")
+                send_discord_debug(f"❌ 캔들 로딩 실패: {tag}", "aggregated")
+    # ───────── 결과 요약 ─────────
+    summary = [
+        "📊 [HIST] 과거 캔들 로딩 결과",
+        f" ├─ Binance : ✅ 성공 {ok_bi} / ❌ 실패 {len(fail_bi)}",
+        f" └─ Gate    : ✅ 성공 {ok_ga} / ❌ 실패 {len(fail_ga)}",
+    ]
+    if fail_bi:
+        summary.append(f"    • Binance 실패 → {', '.join(fail_bi)}")
+    if fail_ga:
+        summary.append(f"    • Gate    실패 → {', '.join(fail_ga)}")
+
+    msg = "\n".join(summary)
     print(msg)
-    send_discord_debug(msg, "binance")
+    send_discord_debug(msg, "aggregated")
 
 # 2-A. Binance 실시간 WebSocket
 async def stream_live_candles_binance():
@@ -213,11 +319,19 @@ async def stream_live_candles_gate():
 
             async for msg in ws:
                 data = json.loads(msg.data)
+
+                # ▶️  (1) 채널·이벤트 필터
                 if data.get("channel") != "futures.candlesticks" or data.get("event") != "update":
                     continue
 
+                # ▶️  (2) payload 안전 체크
+                res = data.get("result", [])
+                if not (isinstance(res, list) and len(res) == 3):
+                    # heartbeat/ping 등  형식이 다른 패킷은 스킵
+                    continue
+
                 # payload: [tf, "BTC_USDT", [ts, o, h, l, c, v]]
-                tf, sym, k = data["result"]
+                tf, sym, k = res
                 candle = {
                     "time":   datetime.fromtimestamp(k[0] / 1000),
                     "open":   float(k[1]),
@@ -232,8 +346,9 @@ async def stream_live_candles_gate():
                     pm.update_price(sym, candle["close"], ltf_df=ltf_df)
 
 # 3. 초기 로딩 + WS 병렬 실행
+#    ※ initialize_historical() 는 main.initialize() 에서
+#      이미 한 번 호출되므로 **여기서는 생략**합니다.
 async def start_data_feed():
-    initialize_historical()
     await asyncio.gather(
         stream_live_candles_binance(),
         stream_live_candles_gate()
