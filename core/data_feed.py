@@ -18,6 +18,29 @@ pm = None                            # ↙ 나중에 set_pm() 으로 주입
 LIVE_STREAMS   : set[str] = set()        # 현재 열려있는 심볼 스트림
 STREAM_THREADS : dict[str, threading.Thread] = {}
 
+# ---------------------------------------------------------------------------
+# ⛳  Symbol‑mapping helper (📌 "단 한 곳"에만 유지하기)
+#
+#  · 외부 API → 내부 사용   : to_canon("BTCUSDT") == "BTC_USDT"
+#  · 내부 키   → REST/WS용 : to_binance("BTC_USDT") == "BTCUSDT"
+#
+#  Canonical key = settings.SYMBOLS 의 키와 동일한 형태로 통일한다.
+# ---------------------------------------------------------------------------
+
+
+def to_canon(sym: str) -> str:
+    """Binance 스타일(sym="BTCUSDT") →  settings.SYMBOLS 키("BTC_USDT")"""
+    if sym.endswith("USDT") and not sym.endswith("_USDT"):
+        candidate = sym.replace("USDT", "_USDT")
+        return candidate if candidate in SYMBOLS else sym
+    return sym
+
+
+def to_binance(sym: str) -> str:
+    """Canonical("BTC_USDT") → REST/WS 에 쓰는 "BTCUSDT"""
+    return sym.replace("_", "")
+
+
 TIMEFRAMES_BINANCE = TIMEFRAMES          # 1m · 5m · 15m …
 
 def _ws_worker(symbol: str):
