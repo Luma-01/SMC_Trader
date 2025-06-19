@@ -27,7 +27,7 @@ from gate_api import (
     Configuration,
     FuturesApi,
     FuturesOrder,
-    FuturesPriceTriggeredOrder,   # ✅ 선물용 트리거 주문 모델
+    FuturesPriceTriggeredOrder,    # ▶ SL·TP 트리거 주문 모델
     ApiException,
 )
 from gate_api.exceptions import ApiException
@@ -92,7 +92,7 @@ def set_leverage(symbol: str, leverage: int, *, quiet: bool = False):
         send_discord_debug(msg, "gateio")
     return True
 
-def place_order(symbol: str, side: str, size: float, leverage: int = 20):
+def place_order(symbol: str, side: str, size: float, leverage: int = 20, **_kw):
     try:
         set_leverage(symbol, leverage)
         order = FuturesOrder(
@@ -181,8 +181,11 @@ def get_available_balance() -> float:
     """Gate Futures 계정의 사용 가능 USDT 잔고 조회"""
     try:
         # 6.97.2는 **리스트** 반환 → 첫 요소 사용
-        account = futures_api.list_futures_accounts("usdt")[0]
-        return float(account.available)
+        acc = futures_api.list_futures_accounts("usdt")
+        # SDK 6.97.x → 객체, 6.96 이전 → 리스트  
+        if isinstance(acc, list):
+            acc = acc[0]
+        return float(acc.available)
     except Exception as e:
         print(f"[GATE] 잔고 조회 실패: {e}")
         send_discord_debug(f"[GATE] 잔고 조회 실패 → {e}", "gateio")
@@ -334,24 +337,22 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         tick = get_tick_size(symbol)
         normalized_stop = float(Decimal(str(stop_price)).quantize(tick))
 
-        # SDK 6.97.2:  rule/trigger 필드 사용, 내부 order-object 없이 직접 지정
-        trigger = FuturesPriceTriggeredOrder(
-            contract=contract,
-            trigger=str(normalized_stop),
-            rule=2 if direction == "long" else 1,   # 2 (≤) LONG / 1 (≥) SHORT
-            order_type="market",           # ≤ long / ≥ short (rule 로 결정)
-            price="0",                     # market → price 무시돼도 필요
-            # Gate: 양수 = 매수, 음수 = 매도
-            # 롱 포지션 청산 → 매도(−), 숏 포지션 청산 → 매수(+)
-            size=-size if direction == "long" else size,
-            tif="ioc",
-            reduce_only=True,
-            text="t-SL-UPDATE"
+        # ▶ 6.97.x 모델 객체로 생성 (API 스펙 완전 준수)
+        sl_order = FuturesPriceTriggeredOrder(
+            contract    = contract,
+            size        = 0,                # close=True 로 전량
+            close       = True,
+            trigger     = str(normalized_stop),
+            price_type  = 0,                # 0 = 최근 체결가
+            rule        = 2 if direction == "long" else 1,
+            order_type  = "market",
+            tif         = "ioc",
+            text        = "t-SL-UPDATE",
+            type        = 3,                # 3 = stop-loss
         )
+        futures_api.create_price_triggered_order("usdt", sl_order)
 
-        futures_api.create_price_triggered_order("usdt", trigger)
-
-        msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {stop_price}"
+        msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {normalized_stop}"
         print(msg)
         send_discord_debug(msg, "gateio")
         return True
@@ -506,18 +507,22 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         except Exception:
             pass
 
-        # ② 새 LIMIT 주문
-        tp_order = FuturesOrder(
+        # ② 새 TP 트리거 주문 (모델 객체)
+        tp_order = FuturesPriceTriggeredOrder(
             contract    = contract,
-            size        = side_sz,
-            price       = tp_price,
-            tif         = "gtc",
-            reduce_only = True,
-            text        = "t-TP-UPDATE"
+            size        = 0,
+            close       = True,
+            trigger     = tp_price,
+            price_type  = 0,
+            rule        = 1 if direction == "long" else 2,
+            order_type  = "market",
+            tif         = "ioc",
+            text        = "t-TP-UPDATE",
+            type        = 2,      # 2 = take-profit
         )
-        futures_api.create_futures_order(settle="usdt", futures_order=tp_order)
-        print(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_price}")
-        send_discord_debug(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_price}", "gateio")
+        futures_api.create_price_triggered_order("usdt", tp_order)
+        print(f"[TP 갱신] {symbol} TP 트리거 재설정 완료 → {tp_price}")
+        send_discord_debug(f"[TP 갱신] {symbol} TP 트리거 재설정 완료 → {tp_price}", "gateio")
         return True
 
     except Exception as e:
