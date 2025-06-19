@@ -25,7 +25,10 @@ from config.settings import (
     ENABLE_GATE,
     ENABLE_BINANCE,
 )
-from core.data_feed import candles, initialize_historical, start_data_feed
+from core.data_feed import (
+    candles, initialize_historical, start_data_feed,
+    to_binance, is_gate_sym,
+)
 from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
@@ -110,6 +113,10 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     """
     leverage = meta.get("leverage", DEFAULT_LEVERAGE)
 
+    # 표준 키/거래소 구분
+    is_gate  = is_gate_sym(symbol)
+    base_sym = to_binance(symbol) if not is_gate else symbol   # Binance REST용
+
     # ⚠️ base_sym / is_gate 를 가장 먼저 계산해 둔다
     is_gate  = "_USDT" in symbol
     base_sym = symbol.replace("_", "") if is_gate else symbol
@@ -118,7 +125,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     # ① 내부 포지션 이미 보유
     if pm.has_position(symbol):
         try:
-            df_ltf = candles.get(base_sym, {}).get(ltf_tf)
+            df_ltf = candles.get(symbol, {}).get(ltf_tf)
             if df_ltf and len(df_ltf):
                 last_price = float(df_ltf[-1]["close"]      # deque 는 리스트처럼
                                 if isinstance(df_ltf[-1], dict)
@@ -132,7 +139,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 
                 last_price = float(r["markPrice"])
             pm.update_price(symbol, last_price,
-                            ltf_df=pd.DataFrame(candles.get(base_sym, {}).get(ltf_tf, [])))
+                            ltf_df=pd.DataFrame(candles.get(symbol, {}).get(ltf_tf, [])))
         except Exception as e:
             print(f"[WARN] price-update failed: {symbol} → {e}")
         return
@@ -149,8 +156,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     
     try:
          # ▸ candle dict 는 항상 Binance 포맷(BTCUSDT) 키 사용
-        df_htf = candles.get(base_sym, {}).get(htf_tf)
-        df_ltf = candles.get(base_sym, {}).get(ltf_tf)
+        df_htf = candles.get(symbol, {}).get(htf_tf)
+        df_ltf = candles.get(symbol, {}).get(ltf_tf)
         if df_htf is None or df_ltf is None or len(df_htf) < 30 or len(df_ltf) < 30:
             return
 
