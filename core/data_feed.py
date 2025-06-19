@@ -39,7 +39,9 @@ def to_canon(sym: str) -> str:
 def to_binance(sym: str) -> str:
     """Canonical("BTC_USDT") → REST/WS 에 쓰는 "BTCUSDT"""
     return sym.replace("_", "")
-
+# 간단한 게이트 심볼 판별 한 줄짜리
+def is_gate_sym(sym: str) -> bool:
+    return sym.endswith("_USDT")
 
 TIMEFRAMES_BINANCE = TIMEFRAMES          # 1m · 5m · 15m …
 
@@ -49,7 +51,8 @@ def _ws_worker(symbol: str):
     메인 루프와 동일한 candle append + pm.update_price 호출 로직 재사용.
     """
     global pm               # 스레드 내에서 최신 pm 참조
-    pairs = [f"{symbol.lower()}@kline_{tf}" for tf in TIMEFRAMES_BINANCE]
+    pairs = [f"{to_binance(symbol).lower()}@kline_{tf}"  # ← Binance 형식으로 변환
+             for tf in TIMEFRAMES_BINANCE]
     url   = BINANCE_WS_URL + "/".join(pairs)
 
     async def _runner():
@@ -83,7 +86,7 @@ def ensure_stream(symbol: str):
     `pm.enter()` 에서 호출. 이미 스트림이 있으면 no-op,
     아니면 **백그라운드 스레드**로 `_ws_worker` 시작.
     """
-    symbol = symbol.replace("_", "")     # Gate 심볼 대비
+    symbol = to_binance(symbol)          # 항상 Binance 포맷으로 넘김
     if symbol in LIVE_STREAMS:
         return
     LIVE_STREAMS.add(symbol)
@@ -119,7 +122,7 @@ def load_historical_candles_binance(
     # Binance REST 는 'BTCUSDT' 형태만 허용
     url = f"{BINANCE_REST_URL}/api/v3/klines"
     params = {
-        "symbol": symbol.replace("_", ""),   # 'BTC_USDT' → 'BTCUSDT'
+        "symbol": to_binance(symbol),        # canonical → Binance
         "interval": interval,
         "limit": limit
     }
@@ -267,7 +270,7 @@ def initialize_historical():
 # 2-A. Binance 실시간 WebSocket
 async def stream_live_candles_binance():
     stream_pairs = [
-        f"{symbol.replace('_', '').lower()}@kline_{tf}"
+        f"{to_binance(symbol).lower()}@kline_{tf}"
         for symbol in SYMBOLS
         for tf in TIMEFRAMES
     ]
