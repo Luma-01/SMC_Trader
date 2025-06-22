@@ -12,7 +12,7 @@ load_dotenv()
 #  거래소 모드 스위치
 #    EXCHANGE_MODE = binance | gate | both
 # ───────────────────────────────────────────────
-EXCHANGE_MODE   = os.getenv("EXCHANGE_MODE", "gate").lower()
+EXCHANGE_MODE   = os.getenv("EXCHANGE_MODE", "binance").lower()
 
 ENABLE_BINANCE  = EXCHANGE_MODE in ("binance", "both")
 ENABLE_GATE     = EXCHANGE_MODE in ("gate",    "both")
