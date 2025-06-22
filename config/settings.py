@@ -30,7 +30,8 @@ if ENABLE_BINANCE:
 RR = 2.0
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
-TIMEFRAMES = ['1m', '5m', '15m', '1h']
+TIMEFRAMES = ['1m', '5m']
+#TIMEFRAMES = ['1m', '5m', '15m', '1h']
 DEFAULT_LEVERAGE = 20
 CUSTOM_LEVERAGES = {}
 
@@ -118,8 +119,10 @@ def fetch_symbol_info(
             "leverage": applied_lev,
             "maxLeverage": max_lev,
             # 거래소 구분 후 타임프레임 설정
-            "htf": "15m" if "_USDT" in symbol else "1h",
-            "ltf": "1m" if "_USDT" in symbol else "5m"
+            "htf": "15m"
+            #"htf": "15m" if "_USDT" in symbol else "1h",
+            "ltf": "1m"
+            #"ltf": "1m" if "_USDT" in symbol else "5m"
         }
 
     # ▸ 부족하면 그대로, 넘치면 앞에서 required 개만 잘라서 반환
