@@ -14,11 +14,13 @@ from config.settings import RR, USE_HTF_PROTECTIVE   # ⬅︎ 스위치 import
 from core.monitor import on_entry, on_exit     # ★ 추가
 from exchange.binance_api import get_mark_price  # ★ 마크 가격 조회
 from notify.discord import send_discord_message, send_discord_debug
+import threading, json, os
 from exchange.router import (
     update_stop_loss,
     update_take_profit,      # ★ NEW
     cancel_order,
     close_position_market,
+    get_open_position,
 )
 from core.data_feed import ensure_stream
 from config.settings import RR
@@ -29,6 +31,65 @@ class PositionManager:
         # ▸ 마지막 종료 시각 저장  {symbol: epoch sec}
         self._cooldowns: Dict[str, float] = {}
 
+        # 🔸 WS 시작 직후 거래소-실시간과 동기화
+        self.sync_from_exchange()
+        # 🔸 주기적 헬스체크 스레드
+        threading.Thread(
+            target=self._health_loop, daemon=True
+        ).start()
+
+    # --------------------------------------------------
+    # 🟢 1)  실행-직후 싱크
+    # --------------------------------------------------
+    def sync_from_exchange(self):
+        """
+        Binance / Gate 의 현재 포지션·주문을 읽어
+        self.positions 캐시를 재구성한다.
+        """
+        from config.settings import SYMBOLS            # 모든 심볼 목록
+        for sym in SYMBOLS:
+            try:
+                live = get_open_position(sym)
+            except Exception as e:
+                print(f"[SYNC] {sym} REST 실패 → {e}")
+                continue
+
+            if live and sym not in self.positions:
+                # ---- SL / TP 실가격 추출 -----------------------
+                sl_px = tp_px = None
+                try:
+                    from exchange.binance_api import client as _c
+                    open_orders = _c.futures_get_open_orders(symbol=sym)
+                    for od in open_orders:
+                        if od["type"] == "STOP_MARKET":
+                            sl_px = float(od["stopPrice"])
+                        elif od["type"] == "LIMIT" and od.get("reduceOnly"):
+                            tp_px = float(od["price"])
+                except Exception:
+                    pass
+
+                entry   = live["entry"]
+                sl_px   = sl_px or (entry * 0.98)      # 대충 2 % 폴백
+                tp_px   = tp_px or (entry * 1.02)
+                self.init_position(
+                    sym, live["direction"], entry, sl_px, tp_px
+                )
+                print(f"[SYNC] {sym} → 캐시 재생성 완료")
+
+            elif (not live) and sym in self.positions:
+                # 캐시에 있는데 실제론 이미 닫힘
+                self.force_exit(sym)
+
+    # --------------------------------------------------
+    # 🟢 2)  15 초마다 헬스체크
+    # --------------------------------------------------
+    def _health_loop(self):
+        while True:
+            try:
+                self.sync_from_exchange()
+            except Exception as e:
+                print(f"[HEALTH] sync 오류: {e}")
+            time.sleep(15)          # ← 주기 조정 가능
     # ─────────  쿨-다운  헬퍼  ──────────
     COOLDOWN_SEC = 300          # ★ 5 분  (원하면 조정)
 
@@ -147,13 +208,10 @@ class PositionManager:
                 pos["half_exit"] = True
 
         # ───────────────────────────────────────────────
-        # ❷ 아직 절반 익절 전이면 → 트레일링 SL/TP 수행
-        #    (MSS 가 이미 발생했어도 내부에서 보호선 범위 체크)
-        # ───────────────────────────────────────────────
-        if not pos["half_exit"]:
-            self.try_update_trailing_sl(symbol, current_price)
+        # ❷ SL/TP 는 **절반 익절 후에도** 계속 추적
+        self.try_update_trailing_sl(symbol, current_price)
 
-            # ───────── LTF(1 m) + MTF(5 m) 보호선 후보 ─────────
+        # ───────── LTF(1 m) (+ 선택적 HTF 5 m) 보호선 후보 ────────
             candidates = []
             if ltf_df is not None:
                 p = get_ltf_protective(ltf_df, direction)
