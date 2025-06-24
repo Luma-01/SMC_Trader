@@ -27,17 +27,30 @@ ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 # ════════════════════════════════════════════════════════
 # get_mark_price: SL 내부 로직용으로 markPrice 가져오기
 # ════════════════════════════════════════════════════════
+def _to_binance_symbol(sym: str) -> str:
+    """
+    Gate → Binance 선물 심볼 변환
+      'ETH_USDT'  -> 'ETHUSDT'
+      'ETH/USDT'  -> 'ETHUSDT'
+    이미 Binance 형식이면 그대로 반환
+    """
+    sym = sym.upper()
+    if '_' in sym:
+        sym = sym.replace('_USDT', 'USDT').replace('_', '')
+    return sym
+
 def get_mark_price(symbol: str) -> float:
     """현재 마크 가격(markPrice) 반환. 실패 시 마지막 체결가로 폴백."""
     try:
-        resp = client.futures_mark_price(symbol=symbol.upper())
+        b_sym = _to_binance_symbol(symbol)
+        resp = client.futures_mark_price(symbol=b_sym)
         return float(resp.get("markPrice", resp.get("price", 0)))
     except Exception as e:
         print(f"[ERROR] mark price fetch failed: {symbol} → {e}")
         send_discord_debug(f"[BINANCE] mark price fetch failed: {symbol} → {e}", "binance")
         # 폴백: ticker 마지막 가격
         try:
-            tk = client.futures_symbol_ticker(symbol=symbol.upper())
+            tk = client.futures_symbol_ticker(symbol=b_sym)
             return float(tk.get("price", 0))
         except:
             return 0.0
@@ -323,15 +336,16 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         )
         tick_f = float(tick)
 
-        # LONG: stopPrice 는 markPrice-tick 보다 낮아야, SHORT: markPrice+tick 보다 높아야
-        if direction == "long" and stop_dec >= Decimal(str(mark_price)):
-            stop_dec = Decimal(str(mark_price - tick_f)).quantize(
-                tick, rounding=ROUND_DOWN
-            )
-        elif direction == "short" and stop_dec <= Decimal(str(mark_price)):
-            stop_dec = Decimal(str(mark_price + tick_f)).quantize(
-                tick, rounding=ROUND_UP
-            )
+        # ── 최소 버퍼: markPrice 와 ≥ BUFFER_TICKS × tickSize 이상 간격 확보 ──
+        BUFFER_TICKS = 3                         # ← 필요하면 2~5 사이 조정
+        if direction == "long":
+            limit_price = Decimal(str(mark_price - tick_f * BUFFER_TICKS))
+            if stop_dec >= limit_price:
+                stop_dec = limit_price.quantize(tick, ROUND_DOWN)
+        else:  # short
+            limit_price = Decimal(str(mark_price + tick_f * BUFFER_TICKS))
+            if stop_dec <= limit_price:
+                stop_dec = limit_price.quantize(tick, ROUND_UP)
 
         stop_str = format(stop_dec, "f")
 
@@ -347,26 +361,28 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         if FUTURES_MODE_HEDGE:
             kwargs["positionSide"] = position_side
 
-        # ── ① 기존 STOP_MARKET SL 주문 취소 ─────────────────────────────
+        # ── ① 새 SL 주문 생성  (실패시 예외 발생) ────────────────────────
+        order = client.futures_create_order(**kwargs)
+
+        new_id = order["orderId"]
+
+        # ── ② “다른” STOP-MARKET 주문은 모두 취소  ──────────────────────
         try:
-            open_orders = client.futures_get_open_orders(symbol=symbol)
-            for o in open_orders:
-                if o['type'] == ORDER_TYPE_STOP_MARKET and o.get('reduceOnly'):
+            for o in client.futures_get_open_orders(symbol=symbol):
+                if (
+                    o["type"] == ORDER_TYPE_STOP_MARKET and
+                    (o.get("reduceOnly") or o.get("closePosition")) and
+                    o["orderId"] != new_id
+                ):
                     try:
-                        client.futures_cancel_order(symbol=symbol, orderId=o['orderId'])
+                        client.futures_cancel_order(symbol=symbol, orderId=o["orderId"])
                         print(f"[CANCEL] {symbol} SL 주문 취소됨 (ID: {o['orderId']})")
                     except BinanceAPIException as ce:
-                        # 주문이 이미 트리거돼서 사라진 경우 → 무시
-                        if ce.code == -2011:   # Unknown order
-                            pass
-                        else:
+                        if ce.code != -2011:        # –2011 = Unknown order → 무시
                             raise
         except Exception as e:
             print(f"[WARN] SL 취소 실패: {e}")
             send_discord_debug(f"[BINANCE] SL 취소 실패 → {e}", "binance")
-
-        # ── ② 새 SL 주문 생성 ────────────────────────────────────────────
-        order = client.futures_create_order(**kwargs)
         msg = f"[SL 갱신] {symbol} STOP_MARKET SL 재설정 완료 → {stop_price}"
         print(msg)
         send_discord_debug(msg, "binance")

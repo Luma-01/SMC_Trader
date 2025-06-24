@@ -1,5 +1,6 @@
 # main.py
 
+import os
 import requests
 import sys
 import asyncio
@@ -63,8 +64,10 @@ if ENABLE_GATE:
 #    이미 한 번 찍혔으면 다시 출력하지 않는다
 #  ■ 나머지 메시지(NEW, 구조, 진입/청산, 에러 등)는 그대로 출력
 ##########################################################################
-
 _seen_log = deque(maxlen=5000)          # 최근 5 000줄만 기억
+
+# 중복 메시지 필터 [ON("0", "false"), OFF("1", "true")]
+DEDUP_OFF = os.getenv("NO_DEDUP", "").lower() in ("0", "false")
 
 def _dedup_print(*args, **kwargs):
     if not args:                        # 빈 print()
@@ -89,9 +92,9 @@ def _dedup_print(*args, **kwargs):
     builtins.__orig_print__(*args, **kwargs)
 
 # 한 번만 패치
-if not hasattr(builtins, "__orig_print__"):
+if not DEDUP_OFF and not hasattr(builtins, "__orig_print__"):
     builtins.__orig_print__ = builtins.print
-    builtins.print = _dedup_print
+    builtins.print          = _dedup_print
 
 # ────────────────────────────────────────────────
 # 최소 SL 간격(틱) – 진입 직후 SL 터지는 현상 방지
@@ -433,12 +436,15 @@ async def strategy_loop():
                     continue
                 await handle_pair(gate_sym, {}, "15m", "1m")
 # ──────────────────────────────────────────────────────────────
-
         await asyncio.sleep(5)
 
         # ─── 수동(외부) 청산 ↔ 내부 포지션 동기화 ───
         await reconcile_internal_with_live()
         maybe_send_weekly_report(datetime.now(timezone.utc))
+
+        if datetime.utcnow().second % 30 == 0:   # 30초마다
+            print(f"[HB] {datetime.utcnow().isoformat()} loop alive")
+
 
 # 내부(pm) ↔ 거래소 포지션 자동 동기화
 async def reconcile_internal_with_live():

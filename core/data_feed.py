@@ -110,6 +110,29 @@ BINANCE_WS_URL   = "wss://stream.binance.com:9443/stream?streams="
 # Gate Futures v4 USDT-settled WS
 GATE_WS_URL      = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 
+# ────────────────────────────────────────────────────────────────
+#  ✨ 공통 Runner : WS 코루틴이 죽어도 알아서 재접속
+#     • CancelledError → 그대로 전파(상위 gather 가 정상 종료시킴)
+#     • 기타 예외      → 로그 찍고 back-off 재시도
+# ────────────────────────────────────────────────────────────────
+import traceback, math
+
+async def _run_forever(coro_factory, tag: str):
+    backoff = 1.0                            # seconds
+    while True:
+        try:
+            await coro_factory()             # 실제 stream 코루틴 실행
+        except asyncio.CancelledError:
+            raise                            # ← graceful shutdown
+        except Exception as e:
+            print(f"[WS][{tag}] crashed → {e!r}")
+            traceback.print_exc()
+            print(f"[WS][{tag}] reconnect in {backoff:.0f}s …")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)   # 1 → 2 → 4 … 최대 60
+        else:
+            # 정상 return 은 비정상 상황 → 곧바로 재시작
+            print(f"[WS][{tag}] returned unexpectedly – restarting")
 
 # 캔들 저장소: {symbol: {timeframe: deque}}
 candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
@@ -309,10 +332,17 @@ async def stream_live_candles_binance():
                     }
                     if symbol in SYMBOLS:
                         candles[symbol][tf].append(candle)
+
                         # ───── 실시간 포지션 가격·SL 갱신 ─────
                         if pm and tf == "1m" and pm.has_position(symbol):
-                            ltf_df = pd.DataFrame(candles[symbol][tf])
-                            pm.update_price(symbol, candle["close"], ltf_df=ltf_df)
+                            ltf_df  = pd.DataFrame(candles[symbol]["1m"])
+                            htf_df5 = pd.DataFrame(candles[symbol]["5m"]) if candles[symbol]["5m"] else None
+                            pm.update_price(
+                                symbol,
+                                candle["close"],
+                                ltf_df = ltf_df,
+                                htf5_df = htf_df5,
+                            )
                     #send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
 
         except Exception as e:
@@ -374,8 +404,29 @@ async def stream_live_candles_gate():
 # 3. 초기 로딩 + WS 병렬 실행
 #    ※ initialize_historical() 는 main.initialize() 에서
 #      이미 한 번 호출되므로 **여기서는 생략**합니다.
-async def start_data_feed():
-    await asyncio.gather(
-        stream_live_candles_binance(),
-        stream_live_candles_gate()
-    )
+
+# ------------------------------------------------------------
+# 🔄  _run_forever 래퍼 (앞서 추가한 헬퍼) 를 이용해
+#     스트림이 죽어도 자동 재연결하도록 감싼 진짜 “export” 함수
+# ------------------------------------------------------------
+
+async def start_data_feed() -> None:
+    """
+    외부(main.py)에서 import 하는 진입점.
+    두 거래소 WS 스트림을 각각 무한 재시도 러너로 실행한다.
+    """
+    # ───────── 실행할 스트림 목록 동적 구성 ─────────
+    tasks = [
+        _run_forever(stream_live_candles_binance, "BINANCE")
+    ]
+
+    # Gate 스트림은 ENABLE_GATE 일 때만 추가
+    if ENABLE_GATE:
+        tasks.append(
+            _run_forever(stream_live_candles_gate, "GATE")
+        )
+    else:
+        print("[INFO] Gate WS disabled (ENABLE_GATE=False)")
+
+    # 병렬 실행
+    await asyncio.gather(*tasks)

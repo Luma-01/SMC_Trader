@@ -2,7 +2,15 @@
 
 import time
 from typing import Dict, Optional
-from core.mss import get_mss_and_protective_low
+
+# ── pandas 타입 힌트/연산에 사용 ──────────────────────
+import pandas as pd
+
+from core.protective import (
+    get_ltf_protective,
+    get_protective_level,      # ← MTF(5 m) 보호선
+)
+from config.settings import RR, USE_HTF_PROTECTIVE   # ⬅︎ 스위치 import
 from core.monitor import on_entry, on_exit     # ★ 추가
 from exchange.binance_api import get_mark_price  # ★ 마크 가격 조회
 from notify.discord import send_discord_message, send_discord_debug
@@ -100,7 +108,14 @@ class PositionManager:
             print(msg)
             send_discord_message(msg, "aggregated")
 
-    def update_price(self, symbol: str, current_price: float, ltf_df=None):
+    # ➊ 5 분 봉(DataFrame) 을 추가로 받을 수 있도록 인자 확장
+    def update_price(
+        self,
+        symbol: str,
+        current_price: float,
+        ltf_df:  Optional[pd.DataFrame] = None,
+        htf5_df: Optional[pd.DataFrame] = None,
+    ):
         if symbol not in self.positions:
             return
 
@@ -138,15 +153,34 @@ class PositionManager:
         if not pos["half_exit"]:
             self.try_update_trailing_sl(symbol, current_price)
 
-        # MSS 먼저 발생했는지 확인
-        if not mss_triggered and ltf_df is not None:
-            mss_data = get_mss_and_protective_low(ltf_df, direction)
-            if mss_data:
-                pos["mss_triggered"]   = True
-                protective            = mss_data["protective_level"]
-                pos["protective_level"] = protective
-                print(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}")
-                send_discord_debug(f"[MSS] 보호선 설정됨 | {symbol} @ {protective:.4f}", "aggregated")
+            # ───────── LTF(1 m) + MTF(5 m) 보호선 후보 ─────────
+            candidates = []
+            if ltf_df is not None:
+                p = get_ltf_protective(ltf_df, direction)
+                if p:
+                    candidates.append(p["protective_level"])
+            # ➋ 스위치: 5 m 보호선 사용 여부
+            if USE_HTF_PROTECTIVE and htf5_df is not None:
+                # 최근 1 시간(5 m×12) 내 스윙
+                p = get_protective_level(htf5_df, direction, lookback=12, span=2)
+                if p:
+                    candidates.append(p["protective_level"])
+
+            if candidates:
+                new_protective = max(candidates) if direction == "long" else min(candidates)
+                better_level   = (
+                    (direction == "long"  and (protective is None or new_protective > protective)) or
+                    (direction == "short" and (protective is None or new_protective < protective))
+                )
+
+                # 보호선이 더 “보수적”일 때만 교체
+                if better_level:
+                    pos["mss_triggered"]   = True        # 최초·후속 MSS 모두 기록
+                    pos["protective_level"] = new_protective
+                    protective              = new_protective
+
+                    print(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}")
+                    send_discord_debug(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}", "aggregated")
 
                 # ─── 보호선 방향·위치 검증 ──────────────────────────────
                 #   LONG  → protective < entry  (저점)
@@ -171,13 +205,10 @@ class PositionManager:
                     protective              = None
                     return                  #   ← 이후 SL 갱신·EARLY-STOP 스킵
                 
-                # 보호선 도달 여부 먼저 체크
-                if ((direction == 'long' and current_price <= protective) or
-                    (direction == 'short' and current_price >= protective)):
-                    print(f"[MSS EARLY STOP] {symbol} 보호선 도달 → SL 갱신 전 종료")
-                    send_discord_message(f"[MSS EARLY STOP] {symbol} 보호선 도달 → SL 갱신 전 종료", "aggregated")
-                    self.close(symbol)
-                    return
+                # 📌 가격이 이미 보호선에 닿았더라도
+                #     ① SL 을 보호선으로 갱신할 수 있으면 갱신
+                #     ② 갱신 불가(시장가 ≤ 보호선)면 기존 SL 유지
+                #        → Stop-Market 체결로 자연 종료되도록 둔다
 
                 needs_update = self.should_update_sl(symbol, protective)
 
@@ -194,19 +225,23 @@ class PositionManager:
                 # ────────────────────────────────────────────────────────
 
                 if needs_update:
-                    # 기존 SL 주문 먼저 취소
-                    if pos.get("sl_order_id"):
-                        cancel_order(symbol, pos["sl_order_id"])
-                        print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
-                        send_discord_debug(f"[SL] 기존 SL 주문 취소됨 | {symbol}", "aggregated")
-
+                    # ① 새 SL 주문 먼저 발행
                     sl_result = update_stop_loss(symbol, direction, protective)
-                    if sl_result is not False:      # 성공 여부만 판단
+                    if sl_result is not False:           # 성공해야만 교체 진행
                         id_info = f" (ID: {sl_result})"
+                        old_id  = pos.get("sl_order_id")   # 기존 주문 기억
+
+                        # 메모리 갱신
                         pos["sl_order_id"] = (
                             sl_result if isinstance(sl_result, int) else None
                         )
                         pos["sl"] = protective
+
+                        # ② 기존 주문 취소 (있으면)
+                        if old_id:
+                            cancel_order(symbol, old_id)
+                            print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
+
                         print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}")
                         send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}", "aggregated")
                     else:
@@ -216,15 +251,11 @@ class PositionManager:
 
                 else:
                     print(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}")
-                    send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}", "aggregated")
+                    # send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}", "aggregated")
 
-                # MSS 먼저 발생했을 경우 → 즉시 전체 종료
-                if ((direction == 'long' and current_price <= protective) or
-                    (direction == 'short' and current_price >= protective)):
-                    print(f"[MSS EARLY STOP] {symbol} 보호선 이탈 → 전체 종료")
-                    send_discord_message(f"[MSS EARLY STOP] {symbol} 보호선 이탈 → 전체 종료", "aggregated")
-                    self.close(symbol)
-                    return
+                # ➜ 더 이상 `EARLY STOP` 으로 시장가 종료하지 않음
+                #    SL 주문이 새롭게 지정됐거나 기존에 남아 있으므로
+                #    Stop-Market 자연 체결을 기다린다.
 
         # ───────── 손 절 판 정 ──────────────────────────────
         # ① 마크 프라이스 사용
@@ -283,25 +314,29 @@ class PositionManager:
         if pos is None:
             return
         
-        # SL 주문 취소
-        sl_order_id = pos.get("sl_order_id")
-        if sl_order_id:
-            ok = cancel_order(symbol, sl_order_id)
-            if ok is False:                     # -2011 = 이미 체결·삭제
-                print(f"[INFO] {symbol} SL 이미 소멸 → MARKET 청산 생략")
-                self._cooldowns[symbol] = time.time()
-                return                          # ★ 조기 리턴
-
-        # ────────────────────────────────
-        # 1) 실거래소 포지션 시장가 청산
-        # ────────────────────────────────
+        # ① 시장가 포지션 청산 시도
         try:
-            close_position_market(symbol)                # ← ★ 핵심 한 줄
-            print(f"[EXIT] {symbol} 시장가 청산 요청 완료")
+            close_position_market(symbol)           # 실패 시 RuntimeError
+
+            # ② 청산 후 포지션이 0 인지 재확인
+            from exchange.router import get_open_position
+            still_live = get_open_position(symbol)
+            if still_live and abs(still_live.get("entry", 0)) > 0:
+                raise RuntimeError("position not closed")
+
+            print(f"[EXIT] {symbol} 시장가 청산 완료")
             send_discord_debug(f"[EXIT] {symbol} 시장가 청산 완료", "aggregated")
+
+            # ③ **확실히 닫힌 뒤** SL 주문 취소
+            sl_order_id = pos.get("sl_order_id")
+            if sl_order_id:
+                cancel_order(symbol, sl_order_id)
+
         except Exception as e:
+            # 실패 시 SL 그대로 둬야 하므로 취소하지 않는다
             print(f"[WARN] {symbol} 시장가 청산 실패 → {e}")
             send_discord_debug(f"[WARN] {symbol} 시장가 청산 실패 → {e}", "aggregated")
+            return   # 헷지 유지 후 재시도 기회
 
         if exit_price is None:
             exit_price = pos.get("last_price", pos["entry"])
@@ -333,8 +368,11 @@ class PositionManager:
             # 롱 ➜ 새 SL 이 더 높아야 보수적
             return new_sl > current_sl
         else:  # short
-            # ㊟ 숏 포지션은 “가격을 내려서(작게 만들어서)” SL 을 끌어 올립니다
-            return new_sl < current_sl
+            # 기본: 더 낮게 ↓, 또는 entry 와의 Risk 가 줄어들면 ↑ 허용
+            entry      = self.positions[symbol]["entry"]
+            risk_now   = abs(entry - current_sl)
+            risk_new   = abs(entry - new_sl)
+            return (new_sl < current_sl) or (risk_new < risk_now)
         
     def try_update_trailing_sl(self, symbol: str, current_price: float, threshold_pct: float = 0.01):
         if symbol not in self.positions:
@@ -348,9 +386,6 @@ class PositionManager:
         # 절반 익절 이후에도 계속 SL 추적
         # (보호선이 있으면 둘 중 더 보수적인 가격만 채택)
 
-        # ─── 최소 거리(리스크-가드) 확보 ───
-        min_rr = 0.0003                      # 0.03 %
-
         # ▸ 거래소마다 호가 tick 이 달라서 “같은 값 두 번 갱신” 현상이 날 수 있음
         #     → **2 tick** 이상 차이날 때만 실제 변경으로 간주
         try:
@@ -358,6 +393,12 @@ class PositionManager:
             tick = _tick(symbol) or 0
         except Exception:
             tick = 0
+
+        # ─── 최소 거리(리스크-가드) 확보 ──────────────────
+        # 한 틱이 차지하는 비율 × 3  (단, 0.03 % 이하로 내려가지 않게)
+        entry     = pos["entry"]
+        tick_rr   = (float(tick) / entry) if (tick and entry) else 0
+        min_rr    = max(0.0003, tick_rr * 3)
 
         if direction == "long":
             new_sl = current_price * (1 - threshold_pct)

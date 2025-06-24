@@ -38,22 +38,37 @@ def update_stop_loss(symbol: str, direction: str, stop_price: float):
     """
     print(f"[router] SL 갱신 요청: {symbol} → {stop_price}")
 
-    # ── 중복 SL 재발주 방지 ────────────────────────────────
-    try:
-        live = get_open_position(symbol) or {}
-        cur_sl = live.get("sl")          # 포지션 구조에 맞춰 주세요
-        if cur_sl:
-            # 틱사이즈를 가져와서 동일 가격인지 판단
-            tick = (
-                gate_tick(symbol) if "_USDT" in symbol else
-                binance_tick(symbol.replace("_", ""))
-            )
-            if abs(cur_sl - stop_price) < tick:
-                # 기존 SL 과 동일 → 재주문 불필요
-                return True
-    except Exception as e:
-        # SL 비교에 실패해도 위험하지 않으므로 경고만
-        print(f"[router] SL 비교 실패, 그대로 진행: {e}")
+    # ────────────────────────────────────────────────
+    #   ▶ 현재 “오픈 주문” 중 STOP-MARKET 이 있는지 살펴보고
+    #     stopPrice 가 변동 없으면 재발주하지 않음
+    # ────────────────────────────────────────────────
+
+    def _current_sl_price(sym: str) -> float | None:
+        try:
+            if sym in GATE_SET:                 # ── Gate
+                from exchange.gate_sdk import get_open_orders
+                for o in get_open_orders(sym):
+                    if o.get("type") == "trigger" and o.get("reduce_only"):
+                        return float(o["price"])
+            else:                               # ── Binance
+                from exchange.binance_api import client, ORDER_TYPE_STOP_MARKET
+                b_sym = sym.replace("_", "")
+                for o in client.futures_get_open_orders(symbol=b_sym):
+                    if o["type"] == ORDER_TYPE_STOP_MARKET and (
+                        o.get("reduceOnly") or o.get("closePosition")
+                    ):
+                        return float(o["stopPrice"])
+        except Exception as e:
+            print(f"[router] SL 가격 조회 실패({sym}) → {e}")
+        return None
+
+    tick = gate_tick(symbol) if symbol in GATE_SET else \
+           binance_tick(symbol.replace("_", ""))
+
+    cur_sl = _current_sl_price(symbol)
+    if cur_sl is not None and abs(cur_sl - stop_price) < float(tick):
+        # ±1 tick 이내면 동일 주문으로 간주 → no-op
+        return True
     if symbol in GATE_SET:       # Gate 심볼이면
         return gate_sl(symbol, direction, stop_price)
     return binance_sl(symbol, direction, stop_price)
@@ -84,13 +99,17 @@ def update_take_profit(symbol: str, direction: str, take_price: float):
         return False
     
 def cancel_order(symbol: str, order_id: int):
+    """
+    Gate:  ❯ price_triggered_order 를 **ID 로 직접 취소**
+           (더 이상 포지션을 강제 종료하지 않음)
+    Binance: 기존 로직 유지
+    """
     if "_USDT" in symbol:
-        # Gate는 SL 주문 ID가 없으므로 전체 포지션 종료로 대체
-        from exchange.gate_sdk import close_position
-        return close_position(symbol)
-    else:
-        from exchange.binance_api import cancel_order as binance_cancel_order
-        return binance_cancel_order(symbol, order_id)
+        from exchange.gate_sdk import cancel_price_trigger      # ★ NEW
+        return cancel_price_trigger(order_id)
+
+    from exchange.binance_api import cancel_order as binance_cancel_order
+    return binance_cancel_order(symbol, order_id)
 
 def get_open_position(symbol: str, *args, **kwargs):
     """
@@ -152,8 +171,14 @@ def close_position_market(symbol: str):
 
     # ── 3) 거래소별 주문 라우팅 ────────────────────
     if "_USDT" in symbol:      # Gate
-        return gate_place(symbol, side, size,
-                          order_type="MARKET", reduceOnly=True)
+        ok = gate_place(symbol, side, size,
+                        order_type="MARKET", reduceOnly=True)
+        if not ok:
+            raise RuntimeError("Gate market-close failed")
+        return ok
     # Binance
-    return binance_place(symbol, side, size,
-                         order_type="MARKET", reduceOnly=True)
+    ok = binance_place(symbol, side, size,
+                       order_type="MARKET", reduceOnly=True)
+    if not ok:
+        raise RuntimeError("Binance market-close failed")
+    return ok

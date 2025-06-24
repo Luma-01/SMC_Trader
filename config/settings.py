@@ -9,6 +9,15 @@ from notify.discord import send_discord_debug
 load_dotenv()
 
 # ───────────────────────────────────────────────
+# 🔧 보호선 산정 모드
+#   •  "ltf"   → 1 분봉 스윙만 사용
+#   •  "mtf"   → 1 분 + 5 분  (기존 동작)
+#   •  .env  에  PROTECTIVE_MODE  지정 가능
+# ───────────────────────────────────────────────
+PROTECTIVE_MODE = os.getenv("PROTECTIVE_MODE", "mtf").lower()
+USE_HTF_PROTECTIVE = (PROTECTIVE_MODE == "mtf")   # 외부에서 import
+
+# ───────────────────────────────────────────────
 #  거래소 모드 스위치
 #    EXCHANGE_MODE = binance | gate | both
 # ───────────────────────────────────────────────

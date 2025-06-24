@@ -26,7 +26,9 @@ def get_mss_and_protective_low(df: pd.DataFrame, direction: str) -> Optional[Dic
         return None
 
     # ───── 보호선 계산 ────────────────────────────
-    pre_mss = df_struct.loc[:mss_idx-1]
+    # MSS 직전 최근 3~5개 스윙 포인트만 체크하도록 컷오프
+    window = 5
+    pre_mss = df_struct.loc[max(0, mss_idx - window):mss_idx-1]
     protective = (
         pre_mss['low'].min()   if direction == 'long'
         else pre_mss['high'].max()

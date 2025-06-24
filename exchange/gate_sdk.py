@@ -3,7 +3,7 @@
 import json
 import os
 from time import time, sleep
-from decimal import Decimal
+from decimal import Decimal, ROUND_UP, ROUND_DOWN
 from config.settings import TRADE_RISK_PCT
 import requests
 # ------------------------------------------------------------------
@@ -54,7 +54,9 @@ futures_api = FuturesApi(api_client)
 # ─────────────────────────────────────────
 # 계약 메타데이터 캐싱(심볼 유효성·스텝 확인용)
 # ─────────────────────────────────────────
-CONTRACT_CACHE = {}
+CONTRACT_CACHE: dict[str, object] = {}
+# Gate USDT-선물 기본 최소 명목가
+MIN_USDT_NOTIONAL = 5.0
 
 # ─────────────── 테스트용 출력 ───────────────
 # 실행 파일이 import 될 때 돌지 않도록 가드
@@ -101,7 +103,6 @@ def place_order(symbol: str, side: str, size: float, leverage: int = 20, **_kw):
             price=0,
             tif="ioc",
             reduce_only=False,
-            auto_size="",
             text="t-SMC-BOT"
         )
 
@@ -228,9 +229,18 @@ to_gate = to_gate_symbol
 
 # TP/SL 포함 주문
 def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: float, leverage: int = 20):
+    # ▸ 가격 라운딩 (Binance 방식과 동일)
     tick = get_tick_size(symbol)
-    tp = float(Decimal(str(tp)).quantize(tick))
-    sl = float(Decimal(str(sl)).quantize(tick))
+    if side == "buy":                       # LONG
+        tp_dec = Decimal(str(tp)).quantize(tick, ROUND_UP)
+        sl_dec = Decimal(str(sl)).quantize(tick, ROUND_DOWN)
+    else:                                   # SHORT
+        tp_dec = Decimal(str(tp)).quantize(tick, ROUND_DOWN)
+        sl_dec = Decimal(str(sl)).quantize(tick, ROUND_UP)
+    tp = float(tp_dec); sl = float(sl_dec)
+    # ────────── sanity check ──────────
+    if tp == 0 or sl == 0:
+        raise ValueError(f"[ABORT] 잘못된 TP/SL 계산 → tp={tp}, sl={sl}")
     set_leverage(symbol, leverage)
     contract = normalize_contract_symbol(symbol)
 
@@ -285,13 +295,24 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
             if sl <= entry_price or sl <= mark_price:
                 raise ValueError(f"❌ SL 오류 (숏) → SL={sl}, Entry={entry_price}, Mark={mark_price}")
 
-        # SL/TP 수량 계산
-        step_size = float(getattr(CONTRACT_CACHE[contract], "size_increment", getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
-        tp_steps = max(1, math.floor((confirmed_size / 2) / step_size))
-        tp_size = tp_steps * step_size
+        # ────── TP 수량 : 절반 (stepSize 미달 → 전량) ──────
+        step_size = float(getattr(CONTRACT_CACHE[contract],
+                                  "size_increment",
+                                  getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
+        tp_size_raw = math.floor((confirmed_size / 2) / step_size) * step_size
+        tp_size = tp_size_raw if tp_size_raw >= step_size else confirmed_size
         sl_size = math.floor(confirmed_size / step_size) * step_size
 
-        # TP 지정가 주문
+        # ── (A) 기존 reduce-only LIMIT 주문 전량 취소 ────────────
+        try:
+            for od in futures_api.list_orders(settle="usdt",
+                                              contract=contract,
+                                              status="open"):
+                if od.reduce_only and od.type == "limit":
+                    futures_api.cancel_orders("usdt", contract, od.id)
+        except Exception:
+            pass
+        # ── (B) 새 TP 지정가 주문 발행 ────────────────────────────
         tp_order = FuturesOrder(
             contract=contract,
             size=int(-tp_size) if side == "buy" else int(tp_size),
@@ -329,30 +350,104 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
 def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
     try:
         contract = normalize_contract_symbol(symbol)
-        pos = futures_api.get_position(settle='usdt', contract=contract)
-        size = float(pos.size)
-        if size == 0:
-            return None
+        # ── (0) 보유 포지션 체크 ───────────────────────
+        pos = futures_api.get_position(settle="usdt", contract=contract)
+        if float(pos.size) == 0:
+            # ▸ 포지션이 없으면 남아있는 SL 트리거만 정리하고
+            #   True 로 반환해 상위 로직이 강제 종료를 호출하지 않도록 한다.
+            try:
+                for od in futures_api.list_price_triggered_orders(
+                        "usdt", contract=contract, status="open"):
+                    futures_api.cancel_price_triggered_orders("usdt", od.id)
+            except Exception:
+                pass
+            return True
 
         tick = get_tick_size(symbol)
-        normalized_stop = float(Decimal(str(stop_price)).quantize(tick))
+        # ── (1) stop_price 안전 보정 (Mark ± 1 tick) ──
+        # ① markPrice – 실패가 잦아 → 다중 폴백
+        mark = 0.0
+        try:                                               # ① REST /mark_price
+            rj   = requests.get(
+                    f"https://fx-api.gateio.ws/api/v4/futures/usdt/mark_price/{contract}",
+                    timeout=3
+                  ).json()
+            mark = float(rj.get("mark_price") or rj.get("price", 0))
+        except Exception:
+            pass
+        if not mark:                                       # ② 24h ticker
+            try:
+                tkr  = futures_api.list_futures_tickers("usdt", contract=contract)[0]
+                mark = float(getattr(tkr, "last", 0))
+            except Exception:
+                pass
+        if not mark:                                       # ③ entryPrice fallback
+            mark = float(pos.entry_price)
+        raw  = Decimal(str(stop_price)).quantize(tick)
+        tick_f = float(tick)
+        if direction == "long"  and raw >= Decimal(str(mark)):
+            raw = Decimal(str(mark - tick_f)).quantize(tick)
+        if direction == "short" and raw <= Decimal(str(mark)):
+            raw = Decimal(str(mark + tick_f)).quantize(tick)
+        normalized_stop = float(raw)
 
-        # ▶ 6.97.x 모델 객체로 생성 (API 스펙 완전 준수)
-        sl_order = FuturesPriceTriggeredOrder(
-            contract    = contract,
-            size        = 0,                # close=True 로 전량
-            close       = True,
-            trigger     = str(normalized_stop),
-            price_type  = 0,                # 0 = 최근 체결가
-            rule        = 2 if direction == "long" else 1,
-            order_type  = "market",
-            tif         = "ioc",
-            text        = "t-SL-UPDATE",
-            type        = 3,                # 3 = stop-loss
+        # ── (2) 현재 열려있는 SL 트리거를 먼저 조회
+        open_triggers = futures_api.list_price_triggered_orders(
+            "usdt", contract=contract, status="open"
         )
-        futures_api.create_price_triggered_order("usdt", sl_order)
 
-        msg = f"[SL 갱신] {symbol} SL 재설정 완료 → {normalized_stop}"
+        # ── (2-a) 동일 가격·규칙의 SL 이미 존재하면 재발행 생략 ── ★ NEW
+        for od in open_triggers:
+            try:
+                trg_price = float(od.trigger.get("price"))
+                rule      = int(od.trigger.get("rule"))
+                want_rule = 2 if direction == "long" else 1
+                if abs(trg_price - normalized_stop) < float(tick) and rule == want_rule:
+                    return True       # 중복 방지: 그대로 유지
+            except Exception:
+                pass
+
+        # ── (3) 새 SL 단일 발행  (Binance STOP_MARKET 대응) ────
+        # Gate v4: initial 쪽에 order_type/close 대신
+        #   - reduce_only = True
+        #   - price      = "0"
+        sl_order = FuturesPriceTriggeredOrder(
+            initial={
+                "contract": contract,
+                "size": 0,          # 전량 청산
+                "price": "0",       # 시장가
+                "close": True,      # ★ size 0 이면 필수!
+                "order_type": "market",
+                "tif": "ioc",
+                "text": "t-SL-UPDATE",
+            },
+            trigger={
+                "price_type": 1,                       # 0=last, 1=mark, 2=index
+                "price": str(normalized_stop),
+                "rule": 2 if direction == "long" else 1,
+            }
+        )
+        try:
+            new_sl = futures_api.create_price_triggered_order("usdt", sl_order)
+        except Exception as e:
+            # ▸ 새 SL 실패 → 기존 SL 유지, 강제 종료 방지
+            send_discord_debug(
+                f"[SL-FAIL] {symbol} 새 SL 생성 실패, 기존 SL 유지 → {e}",
+                "gateio"
+            )
+            return True   # 실패해도 True 반환하여 close_position() 차단
+
+        # ── (4) 새 SL 성공했으면 이전 SL 취소 ─────────────────
+        for od in open_triggers:
+            try:
+                futures_api.cancel_price_triggered_orders("usdt", od.id)
+            except Exception:
+                pass
+
+        msg = (
+            f"[SL 갱신] {symbol} SL 재설정 완료 → {normalized_stop} "
+            f"(id={getattr(new_sl,'id','?')})"
+        )
         print(msg)
         send_discord_debug(msg, "gateio")
         return True
@@ -360,8 +455,24 @@ def update_stop_loss_order(symbol: str, direction: str, stop_price: float):
         msg = f"[ERROR] SL 갱신 실패: {symbol} → {e}"
         print(msg)
         send_discord_debug(msg, "gateio")
-        return None
-    
+        return False
+
+# ─────────────────────────────────────────────────────────────
+#  NEW : router.cancel_order() 가 호출하는 “트리거 취소” 헬퍼 ★
+# ─────────────────────────────────────────────────────────────
+def cancel_price_trigger(order_id: int | str) -> bool:
+    """
+    SL/TP price-triggered 주문 하나만 취소  
+    (router → cancel_order 경유)
+    """
+    try:
+        futures_api.cancel_price_triggered_orders("usdt", order_id)
+        print(f"[GATE] price_triggered_order 취소 완료 | id={order_id}")
+        return True
+    except Exception as e:
+        send_discord_debug(f"[GATE] ❌ price_trigger 취소 실패(id={order_id}) → {e}", "gateio")
+        return False
+
 def close_position(symbol: str):
     try:
         contract = normalize_contract_symbol(symbol)
@@ -370,14 +481,17 @@ def close_position(symbol: str):
         if size == 0:
             return False
 
-        close_order = FuturesOrder(
-            contract=normalize_contract_symbol(symbol),
-            size=-size,
-            tif="ioc",
-            reduce_only=True,
-            text="t-FORCE-CLOSE"
+        futures_api.create_futures_order(
+            settle='usdt',
+            futures_order=FuturesOrder(
+                contract=contract,
+                size=-size,
+                price="0",
+                tif="ioc",
+                reduce_only=True,
+                text="t-FORCE-CLOSE",
+            )
         )
-        futures_api.create_futures_order(settle='usdt', futures_order=close_order)
         
         print(f"[GATE] 포지션 강제 종료 완료 | {symbol}")
         send_discord_debug(f"[GATE] 포지션 강제 종료 완료 | {symbol}", "gateio")
@@ -389,9 +503,11 @@ def close_position(symbol: str):
         return False
 
 def get_tick_size(symbol: str) -> Decimal:
+    """`tick_size` 우선, 없으면 `order_price_round` 사용"""
     try:
         contract = CONTRACT_CACHE[normalize_contract_symbol(symbol)]
-        return Decimal(str(contract.order_price_round))
+        tick = getattr(contract, "tick_size", None) or getattr(contract, "order_price_round", "0.0001")
+        return Decimal(str(tick)).normalize()       # ← 0.010000 → 0.01
     except Exception as e:
         print(f"[GATE] tick_size 조회 실패: {e}")
         send_discord_debug(f"[GATE] tick_size 조회 실패 → {e}", "gateio")
@@ -413,25 +529,76 @@ def calculate_quantity_gate(
         from math import floor
         margin_cap   = usdt_balance * risk_ratio          # 사용할 최대 증거금
         target_notional = margin_cap * leverage            # 목표 명목가
-        raw_qty      = target_notional / price
-        contract_symbol = normalize_contract_symbol(symbol)  # ✅ Gate 심볼 포맷 변환
-        contract = CONTRACT_CACHE[contract_symbol]
+        # ────── 목표 수량(계약 수) 계산 ──────
+        contract_symbol = normalize_contract_symbol(symbol)  # ✅ Gate 심볼
+        contract        = CONTRACT_CACHE[contract_symbol]
+        multiplier      = float(getattr(contract, "quanto_multiplier", 1) or 1)
+        contract_val    = price * multiplier              # 1계약 명목가
+        raw_qty         = target_notional / contract_val
         step_size = float(
-            getattr(contract, "size_increment", getattr(contract, "order_size_min", 0.1))
+            getattr(contract, "size_increment",
+                    getattr(contract, "order_size_min", 0.1))
         )
+        # (추가) **MIN_NOTIONAL** 유사 보정
+        # 일부 코인(신규 상장·저가)은 상품 메타에 min_notional 이 없음
+        # → Gate 기본 5 USDT 를 fallback 으로 사용
+        min_notional_cfg = float(getattr(contract, "min_notional", 0) or 0)
+        size_max  = float(getattr(contract, "order_size_max", 0)) or None
         precision = get_contract_precision(symbol)
         steps = floor(raw_qty / step_size)
-        max_steps = floor((margin_cap * leverage) / (price * step_size))
-        steps = max(1, min(steps, max_steps - 2))  # 초과 방지용 1단계 여유
+        # 최대 가능 스텝(노셔널 기준, 여유 95 %)
+        max_steps_notional = floor((margin_cap * 0.95 * leverage)
+                                   / (contract_val * step_size))
+        if max_steps_notional <= 0:            # 증거금 부족 → 바로 종료
+            print(f"[GATE] ❌ 증거금 부족: price={price}, step={step_size}, "
+                  f"cap={margin_cap}, lev={leverage}")
+            return 0.0
+        # 거래소 절대 수량 한도도 함께 고려
+        if size_max:
+            max_steps_limit = floor(size_max / step_size)
+            max_steps = min(max_steps_notional, max_steps_limit)
+        else:
+            max_steps = max_steps_notional
+
+        steps = max(1, min(steps, max_steps))
+
+        # 유지증거금 부족(LIQUIDATE_IMMEDIATELY) 방지용
+        #   ⇒ 예상 필요 증거금 계산 후 부족-분기 추가 
+        est_margin = (steps * step_size * contract_val) / leverage
+        if est_margin > margin_cap:
+            steps = floor((margin_cap * 0.95 * leverage)
+                          / (contract_val * step_size))
+            steps = max(1, steps)
+
         qty   = round(steps * step_size, precision)
 
-        if qty < step_size:
-            print(f"[GATE] 최소 주문 수량 미달: 계산된 qty={qty}, 최소={step_size}")
+        # ──────────────────────────────────────────────────────
+        # ❶ notional(명목가) 부족 시 stepSize 단위로 증가
+        #    - min_notional이 없으면 MIN_USDT_NOTIONAL(5) 적용
+        # ❷ margin(증거금) 한계를 넘으면 0 으로 drop → 주문 스킵
+        # ──────────────────────────────────────────────────────
+        min_notional_req = max(min_notional_cfg, MIN_USDT_NOTIONAL)
+        while qty * price < min_notional_req:
+            steps += 1
+            qty = round(steps * step_size, precision)
+            est_margin = (steps * step_size * contract_val) / leverage
+            if est_margin > margin_cap * 0.95:     # 증거금 초과 시 중단
+                qty = 0.0
+                break
+
+        # 최종 sanity-check
+        if qty < step_size or qty * price < min_notional_req:
+            print(
+                f"[GATE] 주문 최소값 미달 → qty={qty}, "
+                f"notional={qty*price:.4f} < {min_notional_req}"
+            )
             return 0.0
 
         print(
             f"[GATE] 수량 계산 → raw_qty={raw_qty}, steps={steps}, "
-            f"qty={qty}, max_steps={max_steps}, risk_cap={margin_cap}"
+            f"qty={qty}, max_steps={max_steps}, "
+            f"min_notional={min_notional_req}, "
+            f"risk_cap={margin_cap}, est_margin={est_margin}"
         )
         return qty
     
@@ -475,7 +642,11 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
     try:
         contract  = normalize_contract_symbol(symbol)
         tick_dec  = get_tick_size(symbol)
-        tp_dec    = Decimal(str(take_price)).quantize(tick_dec)
+        # Binance 와 동일한 라운딩 규칙 적용
+        if direction == "long":
+            tp_dec = Decimal(str(take_price)).quantize(tick_dec, ROUND_UP)
+        else:
+            tp_dec = Decimal(str(take_price)).quantize(tick_dec, ROUND_DOWN)
         tp_price  = str(tp_dec)
 
         # 현 포지션 조회 (없으면 실패)
@@ -483,14 +654,14 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         if not pos:
             return False
         qty_full = float(pos["size"])
+        # ── (1) 수량 : **절반 익절** ──────────────────────────────
         qty_half = qty_full / 2
-
-        # 수량 스텝 반올림
-        step   = float(getattr(CONTRACT_CACHE[contract],
-                               "size_increment",
-                               getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
-        qty_tp = max(step, math.floor(qty_half / step) * step)
-        side_sz = -qty_tp if direction == "long" else qty_tp
+        step     = float(getattr(CONTRACT_CACHE[contract],
+                                 "size_increment",
+                                 getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
+        qty_tp_raw = math.floor(qty_half / step) * step
+        # stepSize 미달이면 ➜ 전량 TP
+        qty_tp = qty_tp_raw if qty_tp_raw >= step else qty_full
 
         # ① 기존 TP 주문 취소
         try:
@@ -507,22 +678,18 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         except Exception:
             pass
 
-        # ② 새 TP 트리거 주문 (모델 객체)
-        tp_order = FuturesPriceTriggeredOrder(
+        # ② 새 TP LIMIT 주문 (reduce-only, 절반 물량)
+        tp_order = FuturesOrder(
             contract    = contract,
-            size        = 0,
-            close       = True,
-            trigger     = tp_price,
-            price_type  = 0,
-            rule        = 1 if direction == "long" else 2,
-            order_type  = "market",
-            tif         = "ioc",
+            size        = -qty_tp if direction == "long" else  qty_tp,
+            price       = tp_price,
+            tif         = "gtc",
+            reduce_only = True,
             text        = "t-TP-UPDATE",
-            type        = 2,      # 2 = take-profit
         )
-        futures_api.create_price_triggered_order("usdt", tp_order)
-        print(f"[TP 갱신] {symbol} TP 트리거 재설정 완료 → {tp_price}")
-        send_discord_debug(f"[TP 갱신] {symbol} TP 트리거 재설정 완료 → {tp_price}", "gateio")
+        futures_api.create_futures_order(settle="usdt", futures_order=tp_order)
+        print(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_price} (qty={qty_tp})")
+        send_discord_debug(f"[TP 갱신] {symbol} LIMIT TP 재설정 완료 → {tp_price}", "gateio")
         return True
 
     except Exception as e:
