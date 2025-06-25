@@ -223,96 +223,96 @@ class PositionManager:
             if p:
                 candidates.append(p["protective_level"])
 
-            if candidates:
-                new_protective = max(candidates) if direction == "long" else min(candidates)
-                better_level   = (
-                    (direction == "long"  and (protective is None or new_protective > protective)) or
-                    (direction == "short" and (protective is None or new_protective < protective))
+        if candidates:
+            new_protective = max(candidates) if direction == "long" else min(candidates)
+            better_level   = (
+                (direction == "long"  and (protective is None or new_protective > protective)) or
+                (direction == "short" and (protective is None or new_protective < protective))
+            )
+
+            # 보호선이 더 “보수적”일 때만 교체
+            if better_level:
+                pos["mss_triggered"]   = True        # 최초·후속 MSS 모두 기록
+                pos["protective_level"] = new_protective
+                protective              = new_protective
+
+                print(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}")
+                send_discord_debug(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}", "aggregated")
+
+            # ─── 보호선 방향·위치 검증 ──────────────────────────────
+            #   LONG  → protective < entry  (저점)
+            #   SHORT → protective > entry  (고점)
+            invalid_protective = (
+                (direction == "long"  and protective >= entry) or
+                (direction == "short" and protective <= entry)
+            )
+            if invalid_protective:
+                print(f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
+                    f"(entry={entry:.4f}, protective={protective:.4f})")
+                send_discord_debug(
+                    f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
+                    f"(entry={entry:.4f}, protective={protective:.4f})",
+                    "aggregated",
                 )
-
-                # 보호선이 더 “보수적”일 때만 교체
-                if better_level:
-                    pos["mss_triggered"]   = True        # 최초·후속 MSS 모두 기록
-                    pos["protective_level"] = new_protective
-                    protective              = new_protective
-
-                    print(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}")
-                    send_discord_debug(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}", "aggregated")
-
-                # ─── 보호선 방향·위치 검증 ──────────────────────────────
-                #   LONG  → protective < entry  (저점)
-                #   SHORT → protective > entry  (고점)
-                invalid_protective = (
-                    (direction == "long"  and protective >= entry) or
-                    (direction == "short" and protective <= entry)
-                )
-                if invalid_protective:
-                    print(f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
-                          f"(entry={entry:.4f}, protective={protective:.4f})")
-                    send_discord_debug(
-                        f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
-                        f"(entry={entry:.4f}, protective={protective:.4f})",
-                        "aggregated",
-                    )
-                    # ▸ ❶ 60 초 쿨다운 해시 저장
-                    pos["_mss_skip_until"] = time.time() + 60
-                    # ▸ ❷ 보호선·MSS 플래그 초기화
-                    pos["protective_level"] = None
-                    pos["mss_triggered"]    = False
-                    protective              = None
-                    return                  #   ← 이후 SL 갱신·EARLY-STOP 스킵
+                # ▸ ❶ 60 초 쿨다운 해시 저장
+                pos["_mss_skip_until"] = time.time() + 60
+                # ▸ ❷ 보호선·MSS 플래그 초기화
+                pos["protective_level"] = None
+                pos["mss_triggered"]    = False
+                protective              = None
+                return                  #   ← 이후 SL 갱신·EARLY-STOP 스킵
                 
-                # 📌 가격이 이미 보호선에 닿았더라도
-                #     ① SL 을 보호선으로 갱신할 수 있으면 갱신
-                #     ② 갱신 불가(시장가 ≤ 보호선)면 기존 SL 유지
-                #        → Stop-Market 체결로 자연 종료되도록 둔다
+            # 📌 가격이 이미 보호선에 닿았더라도
+            #     ① SL 을 보호선으로 갱신할 수 있으면 갱신
+            #     ② 갱신 불가(시장가 ≤ 보호선)면 기존 SL 유지
+            #        → Stop-Market 체결로 자연 종료되도록 둔다
 
-                needs_update = self.should_update_sl(symbol, protective)
+            needs_update = self.should_update_sl(symbol, protective)
 
-                # ─── 추가: 보호선-엔트리 거리 최소 0.03 % 보장 ───────────
-                min_rr      = 0.0003       # 0.03 %
-                risk_ratio  = abs(entry - protective) / entry
-                if risk_ratio < min_rr:
-                    print(f"[SL] 보호선 무시: 엔트리와 {risk_ratio:.4%} 격차(≥ {min_rr*100:.2f}% 필요) | {symbol}")
-                    send_discord_debug(
-                        f"[SL] 보호선 무시: 진입가와 {risk_ratio:.4%} 격차 – 기존 SL 유지", "aggregated"
+            # ─── 추가: 보호선-엔트리 거리 최소 0.03 % 보장 ───────────
+            min_rr      = 0.0003       # 0.03 %
+            risk_ratio  = abs(entry - protective) / entry
+            if risk_ratio < min_rr:
+                print(f"[SL] 보호선 무시: 엔트리와 {risk_ratio:.4%} 격차(≥ {min_rr*100:.2f}% 필요) | {symbol}")
+                send_discord_debug(
+                    f"[SL] 보호선 무시: 진입가와 {risk_ratio:.4%} 격차 – 기존 SL 유지", "aggregated"
+                )
+                needs_update = False
+
+            # ────────────────────────────────────────────────────────
+
+            if needs_update:
+                # ① 새 SL 주문 먼저 발행
+                sl_result = update_stop_loss(symbol, direction, protective)
+                if sl_result is not False:           # 성공해야만 교체 진행
+                    id_info = f" (ID: {sl_result})"
+                    old_id  = pos.get("sl_order_id")   # 기존 주문 기억
+
+                    # 메모리 갱신
+                    pos["sl_order_id"] = (
+                        sl_result if isinstance(sl_result, int) else None
                     )
-                    needs_update = False
+                    pos["sl"] = protective
 
-                # ────────────────────────────────────────────────────────
+                    # ② 기존 주문 취소 (있으면)
+                    if old_id:
+                        cancel_order(symbol, old_id)
+                        print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
 
-                if needs_update:
-                    # ① 새 SL 주문 먼저 발행
-                    sl_result = update_stop_loss(symbol, direction, protective)
-                    if sl_result is not False:           # 성공해야만 교체 진행
-                        id_info = f" (ID: {sl_result})"
-                        old_id  = pos.get("sl_order_id")   # 기존 주문 기억
-
-                        # 메모리 갱신
-                        pos["sl_order_id"] = (
-                            sl_result if isinstance(sl_result, int) else None
-                        )
-                        pos["sl"] = protective
-
-                        # ② 기존 주문 취소 (있으면)
-                        if old_id:
-                            cancel_order(symbol, old_id)
-                            print(f"[SL] 기존 SL 주문 취소됨 | {symbol}")
-
-                        print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}")
-                        send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}", "aggregated")
-                    else:
-                        print(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}")
-                        send_discord_debug(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}", "aggregated")
-                        return
-
+                    print(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}")
+                    send_discord_debug(f"[SL] 보호선 기반 SL 재설정 완료 | {symbol} @ {protective:.4f}{id_info}", "aggregated")
                 else:
-                    print(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}")
-                    # send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}", "aggregated")
+                    print(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}")
+                    send_discord_debug(f"[SL] ❌ 보호선 기반 SL 주문 실패 | {symbol}", "aggregated")
+                    return
 
-                # ➜ 더 이상 `EARLY STOP` 으로 시장가 종료하지 않음
-                #    SL 주문이 새롭게 지정됐거나 기존에 남아 있으므로
-                #    Stop-Market 자연 체결을 기다린다.
+            else:
+                print(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}")
+                # send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}", "aggregated")
+
+            # ➜ 더 이상 `EARLY STOP` 으로 시장가 종료하지 않음
+            #    SL 주문이 새롭게 지정됐거나 기존에 남아 있으므로
+            #    Stop-Market 자연 체결을 기다린다.
 
         # ───────── 손 절 판 정 ──────────────────────────────
         # ① 마크 프라이스 사용
