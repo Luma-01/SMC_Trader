@@ -23,7 +23,6 @@ from exchange.router import (
     get_open_position,
 )
 from core.data_feed import ensure_stream
-from config.settings import RR
 
 class PositionManager:
     def __init__(self):
@@ -211,18 +210,18 @@ class PositionManager:
         # ❷ SL/TP 는 **절반 익절 후에도** 계속 추적
         self.try_update_trailing_sl(symbol, current_price)
 
-            # ───────── LTF(1 m) (+ 선택적 HTF 5 m) 보호선 후보 ────────
-            candidates = []
-            if ltf_df is not None:
-                p = get_ltf_protective(ltf_df, direction)
-                if p:
-                    candidates.append(p["protective_level"])
-            # ➋ 스위치: 5 m 보호선 사용 여부
-            if USE_HTF_PROTECTIVE and htf5_df is not None:
-                # 최근 1 시간(5 m×12) 내 스윙
-                p = get_protective_level(htf5_df, direction, lookback=12, span=2)
-                if p:
-                    candidates.append(p["protective_level"])
+        # ───────── LTF(1 m) (+ 선택적 HTF 5 m) 보호선 후보 ────────
+        candidates = []
+        if ltf_df is not None:
+            p = get_ltf_protective(ltf_df, direction)
+            if p:
+                candidates.append(p["protective_level"])
+        # ➋ 스위치: 5 m 보호선 사용 여부
+        if USE_HTF_PROTECTIVE and htf5_df is not None:
+            # 최근 1 시간(5 m×12) 내 스윙
+            p = get_protective_level(htf5_df, direction, lookback=12, span=2)
+            if p:
+                candidates.append(p["protective_level"])
 
             if candidates:
                 new_protective = max(candidates) if direction == "long" else min(candidates)
