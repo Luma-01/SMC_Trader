@@ -130,6 +130,39 @@ class PositionManager:
         tp: float,
         basis: str | None = None,          # ★ NEW
     ):
+        """포지션 등록 + 최소 리스크 보정
+
+        * 바이낸스 저가코인·소수점 자릿수 이슈로 SL이 *entry와 동일*하게
+          계산되는 버그를 막는다.
+        * 진입 직후 수 초 안에 트레일링 SL 이 갱신‑체결되는 현상을 막기 위해
+          `created_at` 타임스탬프를 저장한다.
+        """
+
+        # ─── ① 최소 리스크(거리) 강제 ──────────────────
+        try:
+            from exchange.router import get_tick_size as _tick
+            tick = _tick(symbol) or 0
+        except Exception:
+            tick = 0
+
+        import math
+
+        #   min_rr = max(0.03 %,   tickSize * 3)
+        min_rr = max(0.0003, (float(tick) / entry) * 3 if tick else 0)
+
+        if direction == "long":
+            gap = (entry - sl) / entry
+            if gap < min_rr:
+                sl = entry * (1 - min_rr)
+        else:  # short
+            gap = (sl - entry) / entry
+            if gap < min_rr:
+                sl = entry * (1 + min_rr)
+
+        # ─── ② TP를 SL 기준으로 재계산 --------------------
+        risk = abs(entry - sl)
+        tp = entry + risk * RR if direction == "long" else entry - risk * RR
+
         ensure_stream(symbol)
         self.positions[symbol] = {
             "direction": direction,
@@ -140,7 +173,8 @@ class PositionManager:
             "half_exit": False,
             "protective_level": None,
             "mss_triggered": False,
-            "sl_order_id": None
+            "sl_order_id": None,
+            "_created": time.time(),        # → 트레일링 SL grace‑period 용
         }
         on_entry(symbol, direction, entry, sl, tp)   # ★ 호출
 
@@ -240,10 +274,8 @@ class PositionManager:
                 send_discord_debug(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}", "aggregated")
 
             # ─── 보호선 방향·위치 검증 ──────────────────────────────
-            # LONG → protective > entry(익절) 일 때 유효
-            # SHORT → protective < entry(익절) 일 때 유효
-            # 롱  → 보호선이 entry ‘보다 낮으면’(=아직 손실구간)만 거절
-            # 숏  → 보호선이 entry ‘보다 높으면’(=아직 손실구간)만 거절
+            #   LONG  → protective > entry  일 때만 유효(이미 BE·익절 구간)
+            #   SHORT → protective < entry  일 때만 유효
             invalid_protective = (
                 (direction == "long"  and protective <= entry) or
                 (direction == "short" and protective >= entry)
@@ -438,6 +470,12 @@ class PositionManager:
             return
 
         pos = self.positions[symbol]
+        # ① 1차 익절(half_exit) 전이면 트레일링 SL 비활성
+        if not pos.get("half_exit"):
+            return
+        # ② half_exit 후라도 *진입 30 초 이내* 는 무시 (급격한 노이즈 방어)
+        if time.time() - pos.get("_created", 0) < 30:
+            return
         direction = pos['direction']
         current_sl = pos['sl']
         protective  = pos.get("protective_level")
@@ -478,6 +516,7 @@ class PositionManager:
                         sl_result if isinstance(sl_result, int) else None
                     )
                     # ── TP 동시 갱신 ───────────────────────────────
+                    # risk 는 부호와 관계없이 양수로 계산
                     risk      = abs(pos['entry'] - new_sl)
                     new_tp    = (pos['entry'] + risk * RR
                                   if direction == "long"

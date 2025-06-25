@@ -34,6 +34,7 @@ from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
+from core.confirmation import confirm_ltf_reversal   # ← 추가
 # ────────────── 모드별 import ──────────────
 from exchange.router import get_open_position     # (Gate·Binance 공용)
 
@@ -190,6 +191,11 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         # ⬇️ htf 전체 DataFrame을 그대로 넘겨야 attrs 를 활용할 수 있음
         signal, direction, trg_zone = is_iof_entry(htf, ltf, tick_size)
         if not signal or direction is None:
+            return
+
+        # ───── LTF(1m·5m) 반전이 확인될 때까지 대기 ─────
+        if not confirm_ltf_reversal(ltf, direction):
+            print(f"[WAIT] {symbol} – 아직 LTF 리젝션 미확인. 진입 보류")
             return
 
         entry = float(ltf["close"].iloc[-1])
@@ -418,13 +424,13 @@ async def strategy_loop():
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
         # ───── Binance 스윙 1h→5m ─────
-        if ENABLE_BINANCE:
-            for symbol, meta in SYMBOLS_BINANCE.items():
-                await handle_pair(symbol, meta, "1h", "5m")
+        #if ENABLE_BINANCE:
+        #    for symbol, meta in SYMBOLS_BINANCE.items():
+        #        await handle_pair(symbol, meta, "1h", "5m")
 
         # ───── Binance 단타 15m→1m (테스트) ─────
-        #for symbol, meta in SYMBOLS.items():
-        #    await handle_pair(symbol, meta, "15m", "1m")
+        for symbol, meta in SYMBOLS.items():
+            await handle_pair(symbol, meta, "15m", "1m")
 
         # ───── Gate.io 단타 15m→1m (듀얼 모드 전용) ─────
         if ENABLE_GATE:
