@@ -211,7 +211,7 @@ class PositionManager:
         # ❷ SL/TP 는 **절반 익절 후에도** 계속 추적
         self.try_update_trailing_sl(symbol, current_price)
 
-        # ───────── LTF(1 m) (+ 선택적 HTF 5 m) 보호선 후보 ────────
+            # ───────── LTF(1 m) (+ 선택적 HTF 5 m) 보호선 후보 ────────
             candidates = []
             if ltf_df is not None:
                 p = get_ltf_protective(ltf_df, direction)
@@ -444,16 +444,15 @@ class PositionManager:
         # 절반 익절 이후에도 계속 SL 추적
         # (보호선이 있으면 둘 중 더 보수적인 가격만 채택)
 
-        # ▸ 거래소마다 호가 tick 이 달라서 “같은 값 두 번 갱신” 현상이 날 수 있음
-        #     → **2 tick** 이상 차이날 때만 실제 변경으로 간주
+        # ▸ tickSize 먼저 확보 -------------------------------------
         try:
             from exchange.router import get_tick_size as _tick
             tick = _tick(symbol) or 0
         except Exception:
             tick = 0
 
-        # ─── 최소 거리(리스크-가드) 확보 ──────────────────
-        # 한 틱이 차지하는 비율 × 3  (단, 0.03 % 이하로 내려가지 않게)
+        # ─── 최소 거리(리스크-가드) 확보 ────────────────────────────
+        #   max(0.03 %,   tickSize / entry × 3)
         entry     = pos["entry"]
         tick_rr   = (float(tick) / entry) if (tick and entry) else 0
         min_rr    = max(0.0003, tick_rr * 3)
