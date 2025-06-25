@@ -240,11 +240,13 @@ class PositionManager:
                 send_discord_debug(f"[MSS] 보호선 갱신 | {symbol} @ {protective:.4f}", "aggregated")
 
             # ─── 보호선 방향·위치 검증 ──────────────────────────────
-            #   LONG  → protective < entry  (저점)
-            #   SHORT → protective > entry  (고점)
+            # LONG → protective > entry(익절) 일 때 유효
+            # SHORT → protective < entry(익절) 일 때 유효
+            # 롱  → 보호선이 entry ‘보다 낮으면’(=아직 손실구간)만 거절
+            # 숏  → 보호선이 entry ‘보다 높으면’(=아직 손실구간)만 거절
             invalid_protective = (
-                (direction == "long"  and protective >= entry) or
-                (direction == "short" and protective <= entry)
+                (direction == "long"  and protective <= entry) or
+                (direction == "short" and protective >= entry)
             )
             if invalid_protective:
                 print(f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
