@@ -526,5 +526,10 @@ class PositionManager:
                 else:                       # ★ API 실패 → 값 원복
                     pos["sl"], pos["tp"] = old_sl, old_tp
                     return
+    def dump(self, sym=None):
+        import json, pprint, datetime
+        now = datetime.datetime.utcnow().isoformat(timespec="seconds")
+        data = self.positions if sym is None else {sym: self.positions.get(sym, {})}
+        pprint.pp({ "ts": now, **data })
                 
 _ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}
