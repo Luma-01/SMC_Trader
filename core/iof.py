@@ -9,6 +9,31 @@ from core.utils import refined_premium_discount_filter
 from notify.discord import send_discord_debug
 from typing import Tuple, Optional, Dict
 from decimal import Decimal
+from collections import defaultdict
+
+# ─────────────────────────────────────────────────────────────
+#  ✅  무효(소멸)-블록 캐시
+#      INVALIDATED_BLOCKS[symbol] = { (kind, tf, high, low), … }
+# ─────────────────────────────────────────────────────────────
+
+INVALIDATED_BLOCKS: defaultdict[str, set[tuple]] = defaultdict(set)
+
+
+def mark_invalidated(symbol: str,
+                     kind: str, tf: str,
+                     high: float, low: float) -> None:
+    """
+    가격이 블록(OB·BB)을 ‘완전히’ 돌파해 무효화됐을 때 호출.
+    이후 엔트리 스캔 단계에서 해당 블록이 자동으로 제외된다.
+    """
+    INVALIDATED_BLOCKS[symbol].add((kind, tf, high, low))
+
+
+def is_invalidated(symbol: str,
+                   kind: str, tf: str,
+                   high: float, low: float) -> bool:
+    """지정 블록이 이미 무효화됐는지 여부"""
+    return (kind, tf, high, low) in INVALIDATED_BLOCKS[symbol]
 
 _LAST_OB_TIME: dict[tuple[str, str], datetime]          = {}
 _OB_CACHE_HTF: dict[tuple[str, str], tuple]            = {}
