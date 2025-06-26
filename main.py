@@ -35,6 +35,8 @@ from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
 from core.confirmation import confirm_ltf_reversal   # ← 추가
+# 〃 무효-블록 유틸 가져오기
+from core.iof import is_invalidated, mark_invalidated
 # ────────────── 모드별 import ──────────────
 from exchange.router import get_open_position     # (Gate·Binance 공용)
 
@@ -209,7 +211,12 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         # pattern(=구조 종류)이 'fvg' 이면 건너뛰고,
         # 그렇지 않은 블록(OB, BB 등)만 진입 근거로 사용한다.
         for ob in reversed(detect_ob(ltf)):
-            if ob.get("pattern") == "fvg":          # ➜ 노이즈 많은 FVG 스킵
+            # ① FVG 는 건너뜀
+            if ob.get("pattern") == "fvg":
+                continue
+
+            # ② 이미 무효화된 OB/BB 면 스킵
+            if is_invalidated(symbol, "ob", htf_tf, ob["high"], ob["low"]):
                 continue
 
             if ob["type"].lower() == direction:     # 방향 일치하는 마지막 블록
@@ -343,6 +350,21 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
             send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")
         pm.update_price(symbol, entry, ltf_df=ltf)      # MSS 보호선 갱신
+
+        # ───────── 블록 무효화 감시 ─────────
+        try:                                             # tickSize 확보
+            tick_val = get_tick_size_gate(symbol) if is_gate else get_tick_size(base_sym)
+            tick_val = float(tick_val or 0)
+        except Exception:
+            tick_val = 0
+
+        if zone and tick_val:
+            hi, lo   = float(zone["high"]), float(zone["low"])
+            breach   = tick_val * 2                      # 2-tick 이상 돌파 시 소멸
+            if direction == "long"  and entry < lo - breach:
+                mark_invalidated(symbol, "ob", htf_tf, hi, lo)
+            elif direction == "short" and entry > hi + breach:
+                mark_invalidated(symbol, "ob", htf_tf, hi, lo)
 
     except Exception as e:
         print(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
