@@ -40,7 +40,7 @@ RR = 2.0
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
 TIMEFRAMES = ['1m', '5m', '15m', '1h']
-DEFAULT_LEVERAGE = 20
+DEFAULT_LEVERAGE = 50
 CUSTOM_LEVERAGES = {}
 
 # ─────────────────────────────────────────────

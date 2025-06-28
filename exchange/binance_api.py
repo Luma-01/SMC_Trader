@@ -250,10 +250,20 @@ def place_order_with_tp_sl(
                         break
                 break
 
-        # notional 부족 시 ➜ **전량 TP** 로 대체 (Binance 주문 오류 방지)
+        # ─── MIN_NOTIONAL 보정 로직 개편 ─────────────────────
+        # ① half_qty 로는 5 USDT 를 못 넘길 때,
+        # ② ‘필요 최소 수량’만큼만 늘리되 **전량을 초과하지 않음**.
         if min_notional_tp and half_qty * float(tp) < min_notional_tp:
-            half_qty = math.floor(filled_qty / step) * step
-            half_qty = round(half_qty, prec)
+            # 5 USDT / 가격 → 필요 계약수 → stepSize 로 올림
+            need_steps = math.ceil(min_notional_tp / (float(tp) * step))
+            adj_qty    = need_steps * step
+            adj_qty    = round(adj_qty, prec)
+            # 그래도 절반보다 작으면 절반 사용, 절반보다 크지만 전량보다 크면 전량 한도
+            half_qty   = max(adj_qty, half_qty)
+            half_qty   = min(half_qty, filled_qty)
+            # step 크기보다 작게 남는다면(=시장가치가 5 USDT 미만) 그냥 전량
+            if half_qty < step:
+                half_qty = round(math.floor(filled_qty / step) * step, prec)
             
         tp_kwargs = dict(
             symbol      = symbol,
