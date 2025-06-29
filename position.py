@@ -147,8 +147,8 @@ class PositionManager:
 
         import math
 
-        #   min_rr = max(0.03 %,   tickSize * 3)
-        min_rr = max(0.0003, (float(tick) / entry) * 3 if tick else 0)
+        #   min_rr = max(1.00 %,   tickSize * 3)
+        min_rr = max(0.01, (float(tick) / entry) * 3 if tick else 0)
 
         if direction == "long":
             gap = (entry - sl) / entry
@@ -311,7 +311,7 @@ class PositionManager:
             needs_update = self.should_update_sl(symbol, protective)
 
             # ─── 추가: 보호선-엔트리 거리 최소 0.03 % 보장 ───────────
-            min_rr      = 0.0003       # 0.03 %
+            min_rr      = 0.01         # 1.00 %
             risk_ratio  = abs(entry - protective) / entry
             if risk_ratio < min_rr:
                 print(f"[SL] 보호선 무시: 엔트리와 {risk_ratio:.4%} 격차(≥ {min_rr*100:.2f}% 필요) | {symbol}")
@@ -503,7 +503,7 @@ class PositionManager:
         #   max(0.03 %,   tickSize / entry × 3)
         entry     = pos["entry"]
         tick_rr   = (float(tick) / entry) if (tick and entry) else 0
-        min_rr    = max(0.0003, tick_rr * 3)
+        min_rr    = max(0.01, tick_rr * 3)
 
         if direction == "long":
             new_sl = current_price * (1 - threshold_pct)
