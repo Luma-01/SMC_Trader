@@ -74,8 +74,9 @@ def _ws_worker(symbol: str):
                         "volume": float(k["v"]),
                     }
                     candles[symbol.upper()][tf].append(candle)
-                    if tf == "1m" and pm.has_position(symbol.upper()):
-                        ltf_df = pd.DataFrame(candles[symbol.upper()][tf])
+                    # ⭐ 포지션 관리 기준 TF → **5 m**
+                    if tf == "5m" and pm.has_position(symbol.upper()):
+                        ltf_df = pd.DataFrame(candles[symbol.upper()]["5m"])
                         pm.update_price(symbol.upper(), candle["close"],
                                         ltf_df=ltf_df)
 
@@ -334,14 +335,18 @@ async def stream_live_candles_binance():
                         candles[symbol][tf].append(candle)
 
                         # ───── 실시간 포지션 가격·SL 갱신 ─────
-                        if pm and tf == "1m" and pm.has_position(symbol):
-                            ltf_df  = pd.DataFrame(candles[symbol]["1m"])
-                            htf_df5 = pd.DataFrame(candles[symbol]["5m"]) if candles[symbol]["5m"] else None
+                        if pm and tf == "5m" and pm.has_position(symbol):
+                            ltf_df  = pd.DataFrame(candles[symbol]["5m"])
+                            # 상위 TF(1 h) 보호선용
+                            htf_df1h = (
+                                pd.DataFrame(candles[symbol]["1h"])
+                                if candles[symbol]["1h"] else None
+                            )
                             pm.update_price(
                                 symbol,
                                 candle["close"],
                                 ltf_df = ltf_df,
-                                htf5_df = htf_df5,
+                                htf5_df = htf_df1h,
                             )
                     #send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
 
@@ -397,8 +402,8 @@ async def stream_live_candles_gate():
                     "volume": float(k[5])
                 }
                 candles[sym][tf].append(candle)
-                if pm and tf == "1m" and pm.has_position(sym):
-                    ltf_df = pd.DataFrame(candles[sym][tf])
+                if pm and tf == "5m" and pm.has_position(sym):
+                    ltf_df = pd.DataFrame(candles[sym]["5m"])
                     pm.update_price(sym, candle["close"], ltf_df=ltf_df)
 
 # 3. 초기 로딩 + WS 병렬 실행

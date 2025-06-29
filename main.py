@@ -446,13 +446,13 @@ async def strategy_loop():
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
         # ───── Binance 스윙 1h→5m ─────
-        #if ENABLE_BINANCE:
-        #    for symbol, meta in SYMBOLS_BINANCE.items():
-        #        await handle_pair(symbol, meta, "1h", "5m")
+        if ENABLE_BINANCE:
+            for symbol, meta in SYMBOLS_BINANCE.items():
+                await handle_pair(symbol, meta, "1h", "5m")
 
         # ───── Binance 단타 15m→1m (테스트) ─────
-        for symbol, meta in SYMBOLS.items():
-            await handle_pair(symbol, meta, "15m", "1m")
+        #for symbol, meta in SYMBOLS.items():
+        #    await handle_pair(symbol, meta, "15m", "1m")
 
         # ───── Gate.io 단타 15m→1m (듀얼 모드 전용) ─────
         if ENABLE_GATE:
