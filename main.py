@@ -279,16 +279,20 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             extreme = Decimal(str(ltf["high"].iloc[-2])).quantize(tick_size)
             sl_dec  = (extreme + buf_dec).quantize(tick_size)
 
+        # --- ⚠️ 신규 : SL-Entry 가 같은 Tick(=0 간격) 이면 1-tick 띄우기
+        if abs(entry_dec - sl_dec) < tick_size:
+            sl_dec = sl_dec - tick_size if direction == "long" else sl_dec + tick_size
+        
         # ── 4) 최소 SL 간격 보정 (전역 MIN_SL_TICKS 사용) ───────────
+        # --- 최소 SL 거리 확보 ------------------------------------
         min_gap = tick_size * MIN_SL_TICKS
         if abs(entry_dec - sl_dec) < min_gap:
             adj = min_gap - abs(entry_dec - sl_dec)
             sl_dec = (sl_dec + adj) if direction == "short" else (sl_dec - adj)
             sl_dec = sl_dec.quantize(tick_size)
 
-        # ── 5) **리스크-가드** : 엔트리-SL 간격이 0.03 % 미만이면 강제 확대 ───
-        # Decimal ÷ Decimal → Decimal 로 맞추면 부동소수 오차 ↓
-        min_rr = Decimal("0.0003")            # 0.03 %
+        # ── 5) **리스크-가드** : 엔트리-SL 간격이 1 % 미만이면 강제 확대 ───
+        min_rr = Decimal("0.01")            # 0.03 %
         risk_ratio = (abs(entry_dec - sl_dec) / entry_dec).quantize(Decimal("0.00000001"))
         if risk_ratio < min_rr:
             # `adj` 도 Decimal 로 맞추면 바로 `.quantize()` 가능
