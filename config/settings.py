@@ -51,7 +51,7 @@ TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 RR = 2.0
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
-DEFAULT_LEVERAGE = 50
+DEFAULT_LEVERAGE = 20
 CUSTOM_LEVERAGES = {}
 
 # ─────────────────────────────────────────────
