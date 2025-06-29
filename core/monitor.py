@@ -10,7 +10,9 @@ from pathlib import Path
 from tempfile import gettempdir
 
 from notify.discord import send_discord_file, send_discord_message
+# 차트에 사용할 LTF 타임프레임을 settings 에서 읽어오기
 from core.data_feed import candles
+from config.settings import LTF_TF       # ← NEW
 
 # 내부 메모리용 간단 로그
 TRADE_LOG: list[dict] = []
@@ -49,17 +51,29 @@ def on_exit(symbol: str, exit_price: float, exit_time: datetime | None = None):
 # ────────────────────────── 차트 캡쳐 & 전송 ─────────────────────────
 def _capture_chart(trade: dict):
     sym = trade["symbol"]
-    df = pd.DataFrame(candles.get(sym, {}).get("5m", []))
+    # ── ① 메모리 캔들 (LTF_TF) 우선
+    df = pd.DataFrame(candles.get(sym, {}).get(LTF_TF, []))
     if df.empty:
         import requests, time
         end = int(time.time() * 1000)
         start = end - 60 * 5 * 60 * 1000     # 60개(5분) = 300분
-        url = f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=5m&startTime={start}&endTime={end}"
+        url = (
+            f"https://api.binance.com/api/v3/klines?"
+            f"symbol={sym}&interval={LTF_TF}&startTime={start}&endTime={end}"
+        )
         raw = requests.get(url, timeout=3).json()
         if raw and isinstance(raw, list):
-            df = pd.DataFrame(raw, columns=['time','open','high','low','close','vol','c1','c2','c3','c4','c5','c6'])
+            df = pd.DataFrame(
+                raw,
+                columns=[
+                    'time', 'open', 'high', 'low', 'close',
+                    'vol','c1','c2','c3','c4','c5','c6'
+                ],
+            )
             df['time'] = pd.to_datetime(df['time'], unit='ms')
-            df = df[['time','open','high','low','close']].astype(float)
+            # ── 가격 컬럼만 float 로 변환 ──
+            price_cols = ['open', 'high', 'low', 'close']
+            df[price_cols] = df[price_cols].astype(float)
         if df.empty:
             return
 
