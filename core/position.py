@@ -10,7 +10,7 @@ from core.protective import (
     get_ltf_protective,
     get_protective_level,      # ← MTF(5 m) 보호선
 )
-from config.settings import RR, USE_HTF_PROTECTIVE   # ⬅︎ 스위치 import
+from config.settings import RR, USE_HTF_PROTECTIVE, HTF_TF   # ⬅︎ 스위치 import
 from core.monitor import on_entry, on_exit     # ★ 추가
 from exchange.binance_api import get_mark_price  # ★ 마크 가격 조회
 from notify.discord import send_discord_message, send_discord_debug
@@ -147,8 +147,8 @@ class PositionManager:
 
         import math
 
-        #   min_rr = max(0.03 %,   tickSize * 3)
-        min_rr = max(0.0003, (float(tick) / entry) * 3 if tick else 0)
+        #   min_rr = max(1.00 %,   tickSize * 3)
+        min_rr = max(0.01, (float(tick) / entry) * 3 if tick else 0)
 
         if direction == "long":
             gap = (entry - sl) / entry
@@ -208,7 +208,7 @@ class PositionManager:
         symbol: str,
         current_price: float,
         ltf_df:  Optional[pd.DataFrame] = None,
-        htf5_df: Optional[pd.DataFrame] = None,
+        htf_df:  Optional[pd.DataFrame] = None,
     ):
         if symbol not in self.positions:
             return
@@ -244,19 +244,26 @@ class PositionManager:
         # ❷ SL/TP 는 **절반 익절 후에도** 계속 추적
         self.try_update_trailing_sl(symbol, current_price)
 
-        # ───────── LTF(1 m) (+ 선택적 HTF 5 m) 보호선 후보 ────────
+        # ──────────────────────────────────────────────────────────────
+        #  📌 보호선(MSS) 로직은 **1차 익절(half_exit) 이후부터** 활성
+        #      초기 SL 을 그대로 두고, 익절 뒤에만 ‘더 보수적’ SL 로 교체
+        # ──────────────────────────────────────────────────────────────
         candidates = []
-        if ltf_df is not None:
-            p = get_ltf_protective(ltf_df, direction)
-            if p:
-                candidates.append(p["protective_level"])
-        # ➋ 스위치: 5 m 보호선 사용 여부
-        if USE_HTF_PROTECTIVE and htf5_df is not None:
-            # 최근 1 시간(5 m×12) 내 스윙
-            p = get_protective_level(htf5_df, direction, lookback=12, span=2)
-            if p:
-                candidates.append(p["protective_level"])
+        if half_exit:                                  # ← 핵심 변경
+            # ───────── LTF(1 m) 보호선 후보 ─────────
+            if ltf_df is not None:
+                p = get_ltf_protective(ltf_df, direction)
+                if p:
+                    candidates.append(p["protective_level"])
 
+            # ───────── HTF(5 m) 보호선 – 옵션 ────────
+            if USE_HTF_PROTECTIVE and htf_df is not None:
+                # HTF_TF 를 사용하는 보호선 (lookback 파라미터는 필요에 따라 조정)
+                p = get_protective_level(htf_df, direction, lookback=12, span=2)
+                if p:
+                    candidates.append(p["protective_level"])
+
+        # half_exit 이전에는 candidates == [] → 아래 MSS 블록 스킵
         if candidates:
             new_protective = max(candidates) if direction == "long" else min(candidates)
             better_level   = (
@@ -304,7 +311,7 @@ class PositionManager:
             needs_update = self.should_update_sl(symbol, protective)
 
             # ─── 추가: 보호선-엔트리 거리 최소 0.03 % 보장 ───────────
-            min_rr      = 0.0003       # 0.03 %
+            min_rr      = 0.01         # 1.00 %
             risk_ratio  = abs(entry - protective) / entry
             if risk_ratio < min_rr:
                 print(f"[SL] 보호선 무시: 엔트리와 {risk_ratio:.4%} 격차(≥ {min_rr*100:.2f}% 필요) | {symbol}")
@@ -341,7 +348,9 @@ class PositionManager:
                     return
 
             else:
-                print(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}")
+                # 디버그 노이즈 감소를 위해 half_exit 이후에만 로그
+                if half_exit:
+                    print(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}")
                 # send_discord_debug(f"[SL] 보호선 SL 갱신 생략: 기존 SL이 더 보수적 | {symbol}", "aggregated")
 
             # ➜ 더 이상 `EARLY STOP` 으로 시장가 종료하지 않음
@@ -494,7 +503,7 @@ class PositionManager:
         #   max(0.03 %,   tickSize / entry × 3)
         entry     = pos["entry"]
         tick_rr   = (float(tick) / entry) if (tick and entry) else 0
-        min_rr    = max(0.0003, tick_rr * 3)
+        min_rr    = max(0.01, tick_rr * 3)
 
         if direction == "long":
             new_sl = current_price * (1 - threshold_pct)

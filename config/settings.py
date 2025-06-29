@@ -14,8 +14,8 @@ load_dotenv()
 #   •  "mtf"   → ltf + mtf  (기존 동작)
 #   •  .env  에  PROTECTIVE_MODE  지정 가능
 # ───────────────────────────────────────────────
-PROTECTIVE_MODE = os.getenv("PROTECTIVE_MODE", "mtf").lower()
-USE_HTF_PROTECTIVE = (PROTECTIVE_MODE == "mtf")   # 외부에서 import
+PROTECTIVE_MODE = os.getenv("PROTECTIVE_MODE", "ltf").lower()
+USE_HTF_PROTECTIVE = (PROTECTIVE_MODE == "mtf")   # "mtf" 때만 상위 TF 사용
 
 # ───────────────────────────────────────────────
 #  거래소 모드 스위치
@@ -36,10 +36,21 @@ if ENABLE_BINANCE:
     client = Client(api_key, api_secret, tld='com')
     client.API_URL = "https://fapi.binance.com/fapi"
 
+# ───────────────────────────────────────────────
+# 🕒 단일 소스-오브-트루스(Time-frames)
+#    • .env 에 HTF_TF / LTF_TF 지정 가능
+#    • 모듈들은 여기서만 값을 import
+# ───────────────────────────────────────────────
+HTF_TF = os.getenv("HTF_TF", "4h").lower()   # High-Time-Frame
+LTF_TF = os.getenv("LTF_TF", "15m").lower()   # Low-Time-Frame
+
+# data_feed 등이 구독할 캔들 타임프레임 목록
+#  ↳ 필요 시 ‘추가’ 프레임을 세트에 넣어주면 된다.
+TIMEFRAMES = sorted({HTF_TF, LTF_TF})
+
 RR = 2.0
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
-TIMEFRAMES = ['1m', '5m', '15m', '1h']
 DEFAULT_LEVERAGE = 50
 CUSTOM_LEVERAGES = {}
 

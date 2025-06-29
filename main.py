@@ -16,6 +16,7 @@ from core.structure import detect_structure
 # Decimal 변환용 유틸
 from decimal import Decimal
 from notify.discord import send_discord_debug, send_discord_message
+# settings 에서 새로 만든 TF 상수도 같이 가져온다
 from config.settings import (
     SYMBOLS,
     SYMBOLS_BINANCE,
@@ -25,6 +26,8 @@ from config.settings import (
     DEFAULT_LEVERAGE,
     ENABLE_GATE,
     ENABLE_BINANCE,
+    HTF_TF,
+    LTF_TF,
 )
 from core.data_feed import (
     candles, initialize_historical, start_data_feed,
@@ -445,16 +448,12 @@ async def strategy_loop():
     print("📈 전략 루프 시작됨 (5초 간격)")
     send_discord_message("📈 전략 루프 시작됨 (5초 간격)", "aggregated")
     while True:
-        # ───── Binance 스윙 1h→5m ─────
+        # ───── Binance (HTF ➜ LTF) ──────
         if ENABLE_BINANCE:
             for symbol, meta in SYMBOLS_BINANCE.items():
-                await handle_pair(symbol, meta, "1h", "5m")
+                await handle_pair(symbol, meta, HTF_TF, LTF_TF)
 
-        # ───── Binance 단타 15m→1m (테스트) ─────
-        #for symbol, meta in SYMBOLS.items():
-        #    await handle_pair(symbol, meta, "15m", "1m")
-
-        # ───── Gate.io 단타 15m→1m (듀얼 모드 전용) ─────
+        # ───── Gate.io (HTF ➜ LTF) ─────
         if ENABLE_GATE:
             for symbol in SYMBOLS_GATE:
                 try:
@@ -462,7 +461,7 @@ async def strategy_loop():
                 except ValueError as e:
                     print(f"[WARN] Gate 미지원 심볼 제외: {symbol} ({e})")
                     continue
-                await handle_pair(gate_sym, {}, "15m", "1m")
+                await handle_pair(gate_sym, {}, HTF_TF, LTF_TF)
 # ──────────────────────────────────────────────────────────────
         await asyncio.sleep(5)
 

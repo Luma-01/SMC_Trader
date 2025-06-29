@@ -6,7 +6,11 @@ import requests
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 # settings 에서 Gate 사용 여부도 같이 가져옴
-from config.settings import SYMBOLS, TIMEFRAMES, CANDLE_LIMIT, ENABLE_GATE
+from config.settings import (
+    SYMBOLS, TIMEFRAMES, CANDLE_LIMIT, ENABLE_GATE,
+    LTF_TF,          # ex) "1h"
+    HTF_TF,          # ex) "1d"
+)
 import json                        # 🌟 Gate WS 메시지 파싱용
 from notify.discord import send_discord_debug
 import pandas as pd
@@ -43,7 +47,11 @@ def to_binance(sym: str) -> str:
 def is_gate_sym(sym: str) -> bool:
     return sym.endswith("_USDT")
 
-TIMEFRAMES_BINANCE = TIMEFRAMES          # 1m · 5m · 15m …
+# ▶ settings 안 TIMEFRAMES 전체를 그대로 쓰고,
+#   그중 LTF_TF/HTF_TF 를 기준 타임프레임으로 사용
+TIMEFRAMES_BINANCE = TIMEFRAMES
+LTF = LTF_TF
+HTF = HTF_TF
 
 def _ws_worker(symbol: str):
     """
@@ -74,9 +82,9 @@ def _ws_worker(symbol: str):
                         "volume": float(k["v"]),
                     }
                     candles[symbol.upper()][tf].append(candle)
-                    # ⭐ 포지션 관리 기준 TF → **5 m**
-                    if tf == "5m" and pm.has_position(symbol.upper()):
-                        ltf_df = pd.DataFrame(candles[symbol.upper()]["5m"])
+                    # ⭐ 포지션 업데이트는 **설정된 LTF_TF** 로만
+                    if tf == LTF and pm.has_position(symbol.upper()):
+                        ltf_df = pd.DataFrame(candles[symbol.upper()][LTF])
                         pm.update_price(symbol.upper(), candle["close"],
                                         ltf_df=ltf_df)
 
@@ -335,18 +343,18 @@ async def stream_live_candles_binance():
                         candles[symbol][tf].append(candle)
 
                         # ───── 실시간 포지션 가격·SL 갱신 ─────
-                        if pm and tf == "5m" and pm.has_position(symbol):
-                            ltf_df  = pd.DataFrame(candles[symbol]["5m"])
-                            # 상위 TF(1 h) 보호선용
-                            htf_df1h = (
-                                pd.DataFrame(candles[symbol]["1h"])
-                                if candles[symbol]["1h"] else None
+                        if pm and tf == LTF and pm.has_position(symbol):
+                            ltf_df = pd.DataFrame(candles[symbol][LTF])
+                            # ─ 보호선용 상위 TF(HTF_TF) DataFrame
+                            htf_df = (
+                                pd.DataFrame(candles[symbol][HTF])
+                                if candles[symbol][HTF] else None
                             )
                             pm.update_price(
                                 symbol,
                                 candle["close"],
                                 ltf_df = ltf_df,
-                                htf5_df = htf_df1h,
+                                htf5_df = htf_df,      # ← 새 인자명
                             )
                     #send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
 
@@ -402,8 +410,8 @@ async def stream_live_candles_gate():
                     "volume": float(k[5])
                 }
                 candles[sym][tf].append(candle)
-                if pm and tf == "5m" and pm.has_position(sym):
-                    ltf_df = pd.DataFrame(candles[sym]["5m"])
+                if pm and tf == LTF and pm.has_position(sym):
+                    ltf_df = pd.DataFrame(candles[sym][LTF])
                     pm.update_price(sym, candle["close"], ltf_df=ltf_df)
 
 # 3. 초기 로딩 + WS 병렬 실행
