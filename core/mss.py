@@ -21,7 +21,14 @@ def get_mss_and_protective_low(
     최근 MSS(BOS) 감지 후 MSS 직전 스윙로우/스윙하이를 보호선으로 돌려줌
     direction: 'long' or 'short'
     """
+    # ── 구조 리스트 (NaN 제외) ─────────────────────
     df_struct = detect_structure(df, use_wick=use_wick).dropna(subset=['structure'])
+
+    # 몸통 기준일 때 원본 df에도 body_high/low 컬럼이 없으면 생성
+    if not use_wick and 'body_high' not in df.columns:
+        df['body_high'] = df[['open', 'close']].max(axis=1)
+        df['body_low']  = df[['open', 'close']].min(axis=1)
+
     hi = 'high' if use_wick else 'body_high'
     lo = 'low'  if use_wick else 'body_low'
 
@@ -30,14 +37,16 @@ def get_mss_and_protective_low(
         return None
 
     # ───── 최근 BOS(= MSS) 찾기 ───────────────────
-    df_struct = df_struct.reset_index(drop=True)   # iloc 인덱스 안전
     bos_tag = 'BOS_up' if direction == 'long' else 'BOS_down'
+    mss_idx = df_struct[df_struct['structure'] == bos_tag].last_valid_index()  # <― 원본 index(label)
 
-    mss_idx = df_struct[df_struct['structure'] == bos_tag].last_valid_index()
-    if mss_idx is None or mss_idx < 2:            # 직전 스윙 포인트 부족
+    if mss_idx is None:
         print(f"[MSS] {direction.upper()} MSS 미탐지/기준부족")
         return None
 
+    # df_struct 내 위치(숫자 idx) → 보호선 계산용
+    mss_pos = df_struct.index.get_loc(mss_idx)
+    
     # ───── BOS 폭 & ATR 필터 ──────────────────────
     #   • BOS 폭이 0.8 × ATR14 이상일 때만 MSS 인정
     # ------------------------------------------------
@@ -54,7 +63,7 @@ def get_mss_and_protective_low(
     atr = tr.rolling(window=atr_window).mean()
 
     bos_range = df.loc[mss_idx, hi] - df.loc[mss_idx, lo]
-    atr_val   = atr.iloc[mss_idx]
+    atr_val   = atr.loc[mss_idx]
     if np.isnan(atr_val) or bos_range < 0.8 * atr_val:
         print(f"[MSS] {direction.upper()} MSS BOS폭 {bos_range:.2f} < 0.8×ATR({atr_val:.2f}) → 패스")
         return None
@@ -62,7 +71,7 @@ def get_mss_and_protective_low(
     # ───── 보호선 계산 ────────────────────────────
     # MSS 직전 최근 3~5개 스윙 포인트만 체크하도록 컷오프
     window = 5
-    pre_mss = df_struct.loc[max(0, mss_idx - window):mss_idx-1]
+    pre_mss = df_struct.iloc[max(0, mss_pos - window): mss_pos]
     protective = pre_mss[lo].min() if direction == 'long' else pre_mss[hi].max()
 
     # ───── 재진입 제한 ────────────────────────────
