@@ -14,7 +14,7 @@ def get_mss_and_protective_low(
     direction: str,
     *,
     atr_window: int = 14,
-    use_wick: bool = True,
+    use_wick: bool = false,
     reentry_limit: int = 2,
 ) -> Optional[Dict]:
     """
