@@ -6,12 +6,20 @@ from notify.discord import send_discord_debug
 
 last_sent_structure: dict[tuple[str, str], tuple[str, pd.Timestamp]] = {}
 
-def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
+def detect_structure(df: pd.DataFrame, *, use_wick: bool = True) -> pd.DataFrame:
     df = df.copy()
     df.attrs.setdefault("symbol", "UNKNOWN")  # 없으면 기본값 설정
     df.attrs.setdefault("tf", "?")  # 타임프레임 기본값 설정
-    df['prev_high'] = df['high'].shift(1)
-    df['prev_low'] = df['low'].shift(1)
+    # ── 선택된 기준(몸통 vs 꼬리)에 따라 고·저 컬럼 매핑
+    if not use_wick:
+        df['body_high'] = df[['open', 'close']].max(axis=1)
+        df['body_low']  = df[['open', 'close']].min(axis=1)
+        hi, lo = 'body_high', 'body_low'
+    else:
+        hi, lo = 'high', 'low'
+
+    df['prev_high'] = df[hi].shift(1)
+    df['prev_low']  = df[lo].shift(1)
     df['structure'] = None
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
@@ -32,13 +40,13 @@ def detect_structure(df: pd.DataFrame) -> pd.DataFrame:
     for i in range(structure_window_start, len(df)):
         try:
             stype = None
-            if df['high'].iloc[i] > df['high'].iloc[i - 1] and df['low'].iloc[i] > df['low'].iloc[i - 1]:
+            if df[hi].iloc[i] > df[hi].iloc[i - 1] and df[lo].iloc[i] > df[lo].iloc[i - 1]:
                 stype = 'BOS_up'
-            elif df['low'].iloc[i] < df['low'].iloc[i - 1] and df['high'].iloc[i] < df['high'].iloc[i - 1]:
+            elif df[lo].iloc[i] < df[lo].iloc[i - 1] and df[hi].iloc[i] < df[hi].iloc[i - 1]:
                 stype = 'BOS_down'
-            elif df['low'].iloc[i] > df['low'].iloc[i - 1] and df['high'].iloc[i - 2] > df['high'].iloc[i - 1]:
+            elif df[lo].iloc[i] > df[lo].iloc[i - 1] and df[hi].iloc[i - 2] > df[hi].iloc[i - 1]:
                 stype = 'CHoCH_up'
-            elif df['high'].iloc[i] < df['high'].iloc[i - 1] and df['low'].iloc[i - 2] < df['low'].iloc[i - 1]:
+            elif df[hi].iloc[i] < df[hi].iloc[i - 1] and df[lo].iloc[i - 2] < df[lo].iloc[i - 1]:
                 stype = 'CHoCH_down'
 
             if stype:
