@@ -352,7 +352,17 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                     f"{trg_zone['kind'].upper()} "
                     f"{trg_zone['low']}~{trg_zone['high']}"
                 )
-            pm.enter(symbol, direction, entry, sl, tp, basis=basis)
+            # MSS-only 진입이면 trg_zone 안에 보호선이 같이 들어옴
+            prot_lv = trg_zone.get("protective") if isinstance(trg_zone, dict) else None
+            pm.enter(
+                symbol,
+                direction,
+                entry,
+                sl,
+                tp,
+                basis=basis,
+                protective=prot_lv,
+            )
         else:
             print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
             send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")

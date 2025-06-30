@@ -9,6 +9,15 @@ from notify.discord import send_discord_debug
 load_dotenv()
 
 # ───────────────────────────────────────────────
+#  ENTRY_METHOD
+#     zone_and_mss →  OB(BB) + LTF MSS 컨펌  *기존 방식*
+#     zone_or_mss  →  HTF 존 OR LTF MSS  어느 쪽이든 True
+#                    (즉 존만 맞으면 바로 진입)
+# ───────────────────────────────────────────────
+ENTRY_METHOD = os.getenv("ENTRY_METHOD", "zone_and_mss").lower()
+# 사용 예:  `.env`   ENTRY_METHOD=zone_or_mss
+
+# ───────────────────────────────────────────────
 # 🔧 보호선 산정 모드
 #   •  "ltf"   → ltf 스윙만 사용
 #   •  "mtf"   → ltf + mtf  (기존 동작)
@@ -41,8 +50,8 @@ if ENABLE_BINANCE:
 #    • .env 에 HTF_TF / LTF_TF 지정 가능
 #    • 모듈들은 여기서만 값을 import
 # ───────────────────────────────────────────────
-HTF_TF = os.getenv("HTF_TF", "4h").lower()   # High-Time-Frame
-LTF_TF = os.getenv("LTF_TF", "15m").lower()   # Low-Time-Frame
+HTF_TF = os.getenv("HTF_TF", "1h").lower()   # High-Time-Frame
+LTF_TF = os.getenv("LTF_TF", "5m").lower()   # Low-Time-Frame
 
 # data_feed 등이 구독할 캔들 타임프레임 목록
 #  ↳ 필요 시 ‘추가’ 프레임을 세트에 넣어주면 된다.

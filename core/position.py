@@ -126,9 +126,10 @@ class PositionManager:
         symbol: str,
         direction: str,
         entry: float,
-        sl: float,
-        tp: float,
-        basis: str | None = None,          # ★ NEW
+        sl: float | None = None,           # ← SL 미리 못 정한 경우 None 허용
+        tp: float | None = None,
+        basis: dict | str | None = None,   # ← dict 도 허용
+        protective: float | None = None,   # ★ NEW
     ):
         """포지션 등록 + 최소 리스크 보정
 
@@ -138,7 +139,16 @@ class PositionManager:
           `created_at` 타임스탬프를 저장한다.
         """
 
-        # ─── ① 최소 리스크(거리) 강제 ──────────────────
+        # ─── ① SL 기본값 결정 ─────────────────────────
+        if sl is None:
+            # ①-A MSS-only protective 가 있으면 그대로
+            if protective is not None:
+                sl = protective
+            else:
+                # ①-B 최후 폴백 = 1 % 리스크
+                sl = entry * (1 - 0.01) if direction == "long" else entry * (1 + 0.01)
+
+        # ─── ② 최소 리스크(거리) 강제 ──────────────────
         try:
             from exchange.router import get_tick_size as _tick
             tick = _tick(symbol) or 0
@@ -171,7 +181,7 @@ class PositionManager:
             "tp": tp,
             "last_price": entry,          # ← 한 번 넣어두면 KeyError 방지
             "half_exit": False,
-            "protective_level": None,
+            "protective_level": protective,          # ← 최초부터 보유
             "mss_triggered": False,
             "sl_order_id": None,
             "_created": time.time(),        # → 트레일링 SL grace‑period 용

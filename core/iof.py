@@ -1,11 +1,12 @@
 # core/iof.py
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
+from config.settings import ENTRY_METHOD, LTF_TF   # LTF_TF 추가 가져오기
 from core.structure import detect_structure
 from core.ob import detect_ob
 from core.bb import detect_bb
-from core.utils import refined_premium_discount_filter
+from core.mss import get_mss_and_protective_low
 from notify.discord import send_discord_debug
 from typing import Tuple, Optional, Dict
 from decimal import Decimal
@@ -18,6 +19,14 @@ from collections import defaultdict
 
 INVALIDATED_BLOCKS: defaultdict[str, set[tuple]] = defaultdict(set)
 
+# ───── 헬퍼: 진행-중 캔들 제거 ─────────────────────────
+def _drop_unclosed(df: pd.DataFrame, tf_minutes: int) -> pd.DataFrame:
+    if df.empty:
+        return df
+    last = df["time"].iloc[-1].to_pydatetime().replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc) - last).total_seconds() < tf_minutes * 60:
+        return df.iloc[:-1]
+    return df
 
 def mark_invalidated(symbol: str,
                      kind: str, tf: str,
@@ -86,12 +95,6 @@ def is_iof_entry(
             print(f"[IOF] [{symbol}-{tf}] ⚠️ Bias와 진입 방향 불일치 → Bias={bias}, Direction={direction}")
             #send_discord_debug(f"[IOF] ⚠️ Bias와 진입 방향 불일치 → Bias={bias}, Direction={direction}", "aggregated")
 
-    # 2. Premium / Discount 필터
-    #passed, reason, mid, ote_l, ote_h = refined_premium_discount_filter(htf_df, ltf_df, direction)
-    #if not passed:
-        #print(f"[IOF] ❌ {reason}")
-        #return False, direction, None
-
     # current_price 직접 정의 (PD ZONE 비활 임시 테스트용)
     if ltf_df.empty or 'close' not in ltf_df.columns or ltf_df['close'].dropna().empty:
         print("[IOF] ❌ LTF 종가 없음")
@@ -136,33 +139,68 @@ def is_iof_entry(
         return 'long' if z['type'] == 'bullish' else 'short'
 
     # OB
-    if htf_ob:
-        for z in reversed(htf_ob[-LOOKBACK_HTF:]):
-            if _in_zone(z):
-                IN_HTF_ZONE = True
-                trigger_zone = {"kind": "ob_htf", **z}
-                direction = zone_dir(z)          # ★ 존 기반 방향 고정
-                print(f"[DEBUG] Hit HTF-{trigger_zone['kind']}  →  direction set to {direction}")
-                return True, zone_dir(z), trigger_zone   # ★ 바로 진입
+    for z in reversed(htf_ob[-LOOKBACK_HTF:]):
+        if _in_zone(z):
+            IN_HTF_ZONE = True
+            trigger_zone = {"kind": "ob_htf", **z}
+            direction = zone_dir(z)
+            print(f"[DEBUG] Hit HTF-OB  → direction set to {direction}")
+            if ENTRY_METHOD == "zone_or_mss":
+                return True, direction, trigger_zone   # ◆ MSS 컨펌 생략 모드
+            break                                      # → and_mss 모드면 계속
 
     # BB (OB에서 못 찾았을 때만)
-    if (not IN_HTF_ZONE) and htf_bb:
+    if (not IN_HTF_ZONE):
         for z in reversed(htf_bb[-LOOKBACK_HTF:]):
             if _in_zone(z):
                 IN_HTF_ZONE = True
                 trigger_zone = {"kind": "bb_htf", **z}
-                direction = zone_dir(z)          # ★ 존 기반 방향 고정
-                print(f"[DEBUG] Hit HTF-{trigger_zone['kind']}  →  direction set to {direction}")
-                return True, zone_dir(z), trigger_zone   # ★ 바로 진입
+                direction = zone_dir(z)
+                print(f"[DEBUG] Hit HTF-BB  → direction set to {direction}")
+                if ENTRY_METHOD == "zone_or_mss":
+                    return True, direction, trigger_zone
+                break
 
-    if not IN_HTF_ZONE:
-        # HTF 존 자체에 들어오지 않았으면 더 볼 필요 X
+    # ──────────────────────────────────────────────────────────
+    #  HTF 존 OUT 이면서 zone_or_mss 모드?  →  LTF MSS 단독 체크
+    # ──────────────────────────────────────────────────────────
+    # ① LTF_TF 가 '5m', '15m', '1h' 등 어떤 단위이든 분으로 환산
+    unit = LTF_TF[-1].lower()      # 'm' or 'h'
+    val  = int(LTF_TF[:-1])
+    tf_minutes = val * (60 if unit == "h" else 1)
+
+    if (not IN_HTF_ZONE) and ENTRY_METHOD == "zone_or_mss":
+        ltf_df = _drop_unclosed(ltf_df, tf_minutes)
+
+        ltf_struct_df = detect_structure(ltf_df, use_wick=False)
+        last_structs  = ltf_struct_df['structure'].dropna()
+        if last_structs.empty:
+            return False, direction, None
+        last_struct = last_structs.iloc[-1]
+
+        need_long  = last_struct in ('BOS_up', 'CHoCH_up')
+        need_short = last_struct in ('BOS_down', 'CHoCH_down')
+
+        if (direction == 'long' and need_long) or (direction == 'short' and need_short):
+            print(f"[ENTRY] MSS-only trigger ({last_struct}) → zone_or_mss")
+            send_discord_debug(f"[ENTRY] MSS-only trigger → {last_struct}", "aggregated")
+            # ── MSS 보호선 계산 (몸통 기준, 재진입 카운터 영향 X)
+            mss = get_mss_and_protective_low(ltf_df, direction, use_wick=False, reentry_limit=999)
+            prot = mss["protective_level"] if mss else None
+            return True, direction, {"kind": "mss_only", "protective": prot}
+        # MSS도 불일치면 진입 안 함
         return False, direction, None
+
+    # ──────────────────────────────────────────────────────────
+    # 여기서부터는 HTF 존은 이미 통과 → LTF MSS 컨펌 필요
+    # (ENTRY_METHOD == 'zone_and_mss' 인 경우)
+    # ──────────────────────────────────────────────────────────
 
     # ---------------------------------------------------------------------
     # 3-B)  ❖  LTF 구조 컨펌 (BOS / CHoCH 방향 일치)
     # ---------------------------------------------------------------------
-    ltf_struct_df = detect_structure(ltf_df)
+    ltf_df = _drop_unclosed(ltf_df, tf_minutes)
+    ltf_struct_df = detect_structure(ltf_df, use_wick=False)
     recent_structs = ltf_struct_df['structure'].dropna()
     if recent_structs.empty:
         return False, direction, None
