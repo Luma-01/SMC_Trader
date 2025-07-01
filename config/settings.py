@@ -50,8 +50,8 @@ if ENABLE_BINANCE:
 #    • .env 에 HTF_TF / LTF_TF 지정 가능
 #    • 모듈들은 여기서만 값을 import
 # ───────────────────────────────────────────────
-HTF_TF = os.getenv("HTF_TF", "15m").lower()   # High-Time-Frame
-LTF_TF = os.getenv("LTF_TF", "1m").lower()   # Low-Time-Frame
+HTF_TF = os.getenv("HTF_TF", "1h").lower()   # High-Time-Frame
+LTF_TF = os.getenv("LTF_TF", "5m").lower()   # Low-Time-Frame
 
 # data_feed 등이 구독할 캔들 타임프레임 목록
 #  ↳ 필요 시 ‘추가’ 프레임을 세트에 넣어주면 된다.
@@ -60,7 +60,7 @@ TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 RR = 2.0
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
-DEFAULT_LEVERAGE = 20
+DEFAULT_LEVERAGE = 30
 CUSTOM_LEVERAGES = {}
 
 # ─────────────────────────────────────────────
@@ -87,7 +87,7 @@ def fetch_max_leverages():
 
 # ─── 상위 심볼 개수 & 오버슛 비율 상수 ─────────────────────────────
 TOP_SYMBOL_LIMIT  = 20           # 최종적으로 사용할 상위 N개 심볼
-OVERSHOOT_FACTOR = 1.5            # limit * OVERSHOOT_FACTOR 만큼 여유분 확보
+OVERSHOOT_FACTOR = 2            # limit * OVERSHOOT_FACTOR 만큼 여유분 확보
 # ──────────────────────────────────────────────────────────────────
 
 def fetch_top_futures_symbols(
