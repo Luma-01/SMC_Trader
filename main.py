@@ -1,5 +1,14 @@
 # main.py
 
+import builtins, traceback
+_orig_print = builtins.print
+def debug_print(*args, **kw):
+    if args and "[BINANCE] 심볼 누락" in str(args[0]):
+        traceback.print_stack(limit=5)   # 어디서 불렀는지 5단계만 표시
+    _orig_print(*args, **kw)
+builtins.print = debug_print
+
+
 import os
 import requests
 import sys
