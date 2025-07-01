@@ -101,12 +101,29 @@ def ensure_futures_filters(symbol: str) -> dict:
     캐시를 교체한다.
     """
     ei = _fetch_exchange_info(symbol)
-    if (
-        not ei.get("symbols") or
-        not any(f["filterType"] == "LOT_SIZE" for f in ei["symbols"][0]["filters"])
-    ):
-        _EI_CACHE.pop(symbol, None)                 # 잘못된 캐시 제거
-        ei = _fetch_exchange_info(symbol)           # 재조회
+    def _has_filters(rec: dict) -> bool:
+        flt = rec.get("filters", [])
+        return any(f["filterType"] == "LOT_SIZE" for f in flt) and \
+               any(f["filterType"] == "PRICE_FILTER" for f in flt)
+
+    if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
+        # ── 캐시 제거 후 1차 재조회 ─────────────────────────
+        _EI_CACHE.pop(symbol, None)
+        ei = _fetch_exchange_info(symbol)
+
+        # ── 그래도 필터가 없으면 : 전체 snapshot 에서 강제 추출 ──
+        if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
+            try:
+                snap = client.futures_exchange_info()          # full
+                sym_rec = next(
+                    s for s in snap["symbols"]
+                    if s["symbol"] == symbol.upper()
+                )
+                ei = {"symbols": [sym_rec]}
+                _EI_CACHE[symbol] = (time.time(), ei)          # 캐시 교체
+            except Exception:
+                ei = {"symbols": []}   # 최종 실패
+
     return ei["symbols"][0] if ei.get("symbols") else {}
 
 # ════════════════════════════════════════════════════════
@@ -232,15 +249,13 @@ def place_order_with_tp_sl(
         # ──────── 시장 진입 재시도 루프 ────────
         # ← LOT_SIZE 정보 미리 확보
         step   = float(get_tick_size(symbol) ** 0)      # tick → 0.0001 등, **0 = 1
-        exch   = _fetch_exchange_info(symbol)           # ← 변경
+        ei     = ensure_futures_filters(symbol)
         prec   = 1
-        for s in exch["symbols"]:
-            if s["symbol"] == symbol.upper():
-                for f in s["filters"]:
-                    if f["filterType"] == "LOT_SIZE":
-                        step = float(f["stepSize"])     # ex) 0.1
-                        prec = abs(int(round(-1 * math.log10(step))))
-                        break
+        for f in ei.get("filters", []):
+            if f["filterType"] == "LOT_SIZE":
+                step = float(f["stepSize"])             # ex) 0.1
+                prec = abs(int(round(-1 * math.log10(step))))
+                break
 
         qty_try = round(quantity, prec)
         for attempt in range(3):
@@ -327,12 +342,9 @@ def place_order_with_tp_sl(
 
         # ── 바이낸스 MIN_NOTIONAL 필터 재검증 ────────────
         min_notional_tp = None
-        for s in exch["symbols"]:
-            if s["symbol"] == symbol.upper():
-                for f in s["filters"]:
-                    if f["filterType"] == "MIN_NOTIONAL":
-                        min_notional_tp = float(f["notional"])
-                        break
+        for f in ei.get("filters", []):
+            if f["filterType"] == "MIN_NOTIONAL":
+                min_notional_tp = float(f["notional"])
                 break
 
         # ─── MIN_NOTIONAL 보정 로직 개편 ─────────────────────
