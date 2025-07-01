@@ -86,8 +86,8 @@ def fetch_max_leverages():
         return {}
 
 # ─── 상위 심볼 개수 & 오버슛 비율 상수 ─────────────────────────────
-TOP_SYMBOL_LIMIT  = 10           # 최종적으로 사용할 상위 N개 심볼
-OVERSHOOT_FACTOR = 2            # limit * OVERSHOOT_FACTOR 만큼 여유분 확보
+TOP_SYMBOL_LIMIT  = 20           # 최종적으로 사용할 상위 N개 심볼
+OVERSHOOT_FACTOR = 1.5            # limit * OVERSHOOT_FACTOR 만큼 여유분 확보
 # ──────────────────────────────────────────────────────────────────
 
 def fetch_top_futures_symbols(
