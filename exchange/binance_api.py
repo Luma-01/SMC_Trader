@@ -68,8 +68,46 @@ def _fetch_exchange_info(symbol: str | None = None, *, _ttl=300):
             _EI_CACHE[symbol] = (now, res)
         return res
     except Exception:
-        # 최종 실패 → 기존(전체) 스냅샷 반환
-        return client.futures_exchange_info()
+        pass                                        # v1-단건 실패
+
+    # ── ③ 마지막 시도 : **전체 스냅샷 강제 재요청** ─────────────
+    try:
+        res = requests.get(
+            "https://fapi.binance.com/fapi/v1/exchangeInfo",
+            timeout=3
+        ).json()
+        if symbol:                                   # 단일 심볼 모드
+            res = {
+                "symbols": [
+                    s for s in res["symbols"]
+                    if s["symbol"] == symbol.upper()
+                ]
+            }
+            _EI_CACHE[symbol] = (time.time(), res)
+        return res
+    except Exception:
+        pass
+
+    # 그래도 실패 → 마지막으로 기존(캐시) 스냅샷 반환
+    return client.futures_exchange_info()
+
+# ──────────────────────────────────────────────────────────────
+#  LOT_SIZE / PRICE_FILTER 가 누락된 경우를 대비한 헬퍼
+# ──────────────────────────────────────────────────────────────
+def ensure_futures_filters(symbol: str) -> dict:
+    """
+    필수 필터(LOT_SIZE, PRICE_FILTER)가 포함된 exchangeInfo 레코드를
+    보장해서 돌려준다. 캐시에 빈 값이 들어가 있으면 즉시 새로 받아서
+    캐시를 교체한다.
+    """
+    ei = _fetch_exchange_info(symbol)
+    if (
+        not ei.get("symbols") or
+        not any(f["filterType"] == "LOT_SIZE" for f in ei["symbols"][0]["filters"])
+    ):
+        _EI_CACHE.pop(symbol, None)                 # 잘못된 캐시 제거
+        ei = _fetch_exchange_info(symbol)           # 재조회
+    return ei["symbols"][0] if ei.get("symbols") else {}
 
 # ════════════════════════════════════════════════════════
 # get_mark_price: SL 내부 로직용으로 markPrice 가져오기
@@ -501,14 +539,12 @@ def get_total_balance() -> float:
 # 심볼별 수량 소수점 자리수 조회
 def get_quantity_precision(symbol: str) -> int:
     try:
-        exchange_info = _fetch_exchange_info(symbol)    # ← 변경
-        for s in exchange_info['symbols']:
-            if s['symbol'] == symbol.upper():
-                for f in s['filters']:
-                    if f['filterType'] == 'LOT_SIZE':
-                        step_size = float(f['stepSize'])
-                        precision = abs(int(round(-1 * math.log10(step_size))))
-                        return precision
+        ei = ensure_futures_filters(symbol)
+        for f in ei.get('filters', []):
+            if f['filterType'] == 'LOT_SIZE':
+                step_size = float(f['stepSize'])
+                precision = abs(int(round(-1 * math.log10(step_size))))
+                return precision
     except BinanceAPIException as e:
         print(f"[BINANCE] 수량 자리수 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] 수량 자리수 조회 실패 → {e}", "binance")
@@ -516,14 +552,10 @@ def get_quantity_precision(symbol: str) -> int:
 
 def get_tick_size(symbol: str) -> Decimal:
     try:
-        exchange_info = _fetch_exchange_info(symbol)    # ← 변경
-        for s in exchange_info['symbols']:
-            if s['symbol'] == symbol.upper():
-                for f in s['filters']:
-                    if f['filterType'] == 'PRICE_FILTER':
-                        # ex) "0.01000000" → Decimal('0.01')
-                        # 후행 0 제거(normalize)로 정확한 tick 단위를 확보
-                        return Decimal(f['tickSize']).normalize()
+        ei = ensure_futures_filters(symbol)
+        for f in ei.get('filters', []):
+            if f['filterType'] == 'PRICE_FILTER':
+                return Decimal(f['tickSize']).normalize()
     except Exception as e:
         print(f"[BINANCE] tick_size 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
@@ -542,15 +574,13 @@ def calculate_quantity(
         raw_qty = notional / price
 
         # stepSize / notional 최소값 가져오기
-        exchange_info = _fetch_exchange_info(symbol)    # ← 변경
+        ei = ensure_futures_filters(symbol)
         step_size = min_notional = None
-        for s in exchange_info['symbols']:
-            if s['symbol'] == symbol.upper():
-                for f in s['filters']:
-                    if f['filterType'] == 'LOT_SIZE':
-                        step_size = float(f['stepSize'])
-                    elif f['filterType'] == 'MIN_NOTIONAL':
-                        min_notional = float(f['notional'])
+        for f in ei.get('filters', []):
+            if f['filterType'] == 'LOT_SIZE':
+                step_size = float(f['stepSize'])
+            elif f['filterType'] == 'MIN_NOTIONAL':
+                min_notional = float(f['notional'])
         if step_size is None:
             print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
             return 0.0
