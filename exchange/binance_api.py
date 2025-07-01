@@ -24,6 +24,25 @@ client.API_URL = "https://fapi.binance.com/fapi"
 ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
 ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 
+# ──────────────────────────────────────────────────────────
+#  🤖 exchangeInfo 헬퍼  (신규 상장 토큰 fallback)
+# ──────────────────────────────────────────────────────────
+#  • symbol 이 없으면 전체 스냅샷을,  
+#  • symbol 이 있으면 단건 엔드포인트 (/exchangeInfo?symbol=…)를 먼저
+#    시도하고 실패하면 캐시된 스냅샷을 그대로 돌려줍니다.
+# ----------------------------------------------------------
+def _fetch_exchange_info(symbol: str | None = None):
+    if symbol is None:
+        return client.futures_exchange_info()            # 전체 스냅샷
+    try:                                                 # 단건 재조회
+        res = client._request_futures_api(               # SDK 내부 REST 래퍼
+            "get", "exchangeInfo", params={"symbol": symbol.upper()}
+        )
+        return {"symbols": [res["symbols"][0]]}          # 루프 호환 형태
+    except Exception:
+        # 네트워크 오류·심볼 미존재 → 기존 스냅샷 fallback
+        return client.futures_exchange_info()
+
 # ════════════════════════════════════════════════════════
 # get_mark_price: SL 내부 로직용으로 markPrice 가져오기
 # ════════════════════════════════════════════════════════
@@ -146,8 +165,8 @@ def place_order_with_tp_sl(
 
         # ──────── 시장 진입 재시도 루프 ────────
         # ← LOT_SIZE 정보 미리 확보
-        step   = float(get_tick_size(symbol) ** 0)  # tick → 0.0001 등, **0 = 1
-        exch   = client.futures_exchange_info()
+        step   = float(get_tick_size(symbol) ** 0)      # tick → 0.0001 등, **0 = 1
+        exch   = _fetch_exchange_info(symbol)           # ← 변경
         prec   = 1
         for s in exch["symbols"]:
             if s["symbol"] == symbol.upper():
@@ -454,7 +473,7 @@ def get_total_balance() -> float:
 # 심볼별 수량 소수점 자리수 조회
 def get_quantity_precision(symbol: str) -> int:
     try:
-        exchange_info = client.futures_exchange_info()
+        exchange_info = _fetch_exchange_info(symbol)    # ← 변경
         for s in exchange_info['symbols']:
             if s['symbol'] == symbol.upper():
                 for f in s['filters']:
@@ -469,7 +488,7 @@ def get_quantity_precision(symbol: str) -> int:
 
 def get_tick_size(symbol: str) -> Decimal:
     try:
-        exchange_info = client.futures_exchange_info()
+        exchange_info = _fetch_exchange_info(symbol)    # ← 변경
         for s in exchange_info['symbols']:
             if s['symbol'] == symbol.upper():
                 for f in s['filters']:
@@ -495,7 +514,7 @@ def calculate_quantity(
         raw_qty = notional / price
 
         # stepSize / notional 최소값 가져오기
-        exchange_info = client.futures_exchange_info()
+        exchange_info = _fetch_exchange_info(symbol)    # ← 변경
         step_size = min_notional = None
         for s in exchange_info['symbols']:
             if s['symbol'] == symbol.upper():
