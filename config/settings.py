@@ -1,8 +1,7 @@
-# config/settings.py
+ㅕ# config/settings.py
 
 import requests
 from binance.client import Client
-from exchange.binance_api import _fetch_exchange_info     # ★ 추가
 from dotenv import load_dotenv
 import os
 from notify.discord import send_discord_debug
@@ -118,6 +117,17 @@ def fetch_top_futures_symbols(
         send_discord_debug(msg, "binance")
         return []
 
+# ── 선물 exchangeInfo 헬퍼(순환 import 방지용 지연-로드) ──────────────
+from functools import lru_cache
+
+@lru_cache(maxsize=None)
+def _lazy_fetch_ei(sym: str):
+    # settings → binance_api 를 *여기서* 불러오면 이미 TRADE_RISK_PCT 등이
+    # 정의된 뒤이므로 순환 import 에 걸리지 않습니다.
+    from exchange.binance_api import _fetch_exchange_info
+    return _fetch_exchange_info(sym)
+
+
 def fetch_symbol_info(symbols, required: int = TOP_SYMBOL_LIMIT):
     """
     ▸ 심볼마다 선물 exchangeInfo 단건 조회 (v2→v1 fallback)  
@@ -126,7 +136,7 @@ def fetch_symbol_info(symbols, required: int = TOP_SYMBOL_LIMIT):
     all_symbols: dict[str, dict] = {}
     for sym in symbols:
         try:
-            ei = _fetch_exchange_info(sym)
+            ei = _lazy_fetch_ei(sym)
             if ei and ei["symbols"]:
                 all_symbols[sym] = ei["symbols"][0]
         except Exception:
