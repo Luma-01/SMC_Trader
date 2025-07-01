@@ -2,6 +2,7 @@
 
 import os
 import math
+import requests, functools, time
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from config.settings import TRADE_RISK_PCT
 from typing import Optional
@@ -13,7 +14,6 @@ from binance.enums import (
     ORDER_TYPE_MARKET, ORDER_TYPE_LIMIT, TIME_IN_FORCE_GTC
 )
 from binance.exceptions import BinanceAPIException
-import time
 
 load_dotenv()
 
@@ -25,22 +25,50 @@ ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
 ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 
 # ──────────────────────────────────────────────────────────
-#  🤖 exchangeInfo 헬퍼  (신규 상장 토큰 fallback)
+#  🤖 exchangeInfo 헬퍼 (v2 우선 → v1 백업 → LRU 캐시)
 # ──────────────────────────────────────────────────────────
-#  • symbol 이 없으면 전체 스냅샷을,  
-#  • symbol 이 있으면 단건 엔드포인트 (/exchangeInfo?symbol=…)를 먼저
-#    시도하고 실패하면 캐시된 스냅샷을 그대로 돌려줍니다.
-# ----------------------------------------------------------
-def _fetch_exchange_info(symbol: str | None = None):
-    if symbol is None:
-        return client.futures_exchange_info()            # 전체 스냅샷
-    try:                                                 # 단건 재조회
-        res = client._request_futures_api(               # SDK 내부 REST 래퍼
-            "get", "exchangeInfo", params={"symbol": symbol.upper()}
-        )
-        return {"symbols": [res["symbols"][0]]}          # 루프 호환 형태
+_EI_CACHE: dict[str, tuple[float, dict]] = {}   # {sym: (ts, data)}
+
+def _fetch_exchange_info(symbol: str | None = None, *, _ttl=300):
+    """
+    ▸ v2 → v1 순으로 조회  
+    ▸ symbol=None  : 전체 목록  
+      symbol='ABC' : 단일 심볼만 담긴 dict 반환  
+    ▸ 5 분 LRU 캐시 적용
+    """
+    now = time.time()
+    if symbol and (cached := _EI_CACHE.get(symbol)):
+        ts, data = cached
+        if now - ts < _ttl:
+            return data
+
+    base = "https://fapi.binance.com/fapi"
+    try:       # ① v2 시도
+        url = f"{base}/v2/exchangeInfo"
+        if symbol:
+            url += f"?symbol={symbol.upper()}"
+        res = requests.get(url, timeout=3).json()
+        if symbol:
+            res = {"symbols": [res["symbols"][0]]}
+        if symbol:
+            _EI_CACHE[symbol] = (now, res)
+        return res
     except Exception:
-        # 네트워크 오류·심볼 미존재 → 기존 스냅샷 fallback
+        pass
+
+    try:       # ② v1 백업
+        if symbol:
+            res = client._request_futures_api(
+                "get", "exchangeInfo", params={"symbol": symbol.upper()}
+            )
+            res = {"symbols": [res["symbols"][0]]}
+        else:
+            res = client.futures_exchange_info()
+        if symbol:
+            _EI_CACHE[symbol] = (now, res)
+        return res
+    except Exception:
+        # 최종 실패 → 기존(전체) 스냅샷 반환
         return client.futures_exchange_info()
 
 # ════════════════════════════════════════════════════════
