@@ -215,7 +215,7 @@ def is_iof_entry(
         return False, direction, None
 
     print(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}")
-    send_discord_debug(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}", "aggregated")
+    #send_discord_debug(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}", "aggregated")
 
     # 여기까지 왔으면 HTF 존 + LTF BOS/CHoCH 모두 OK → 진입
     return True, direction, trigger_zone
