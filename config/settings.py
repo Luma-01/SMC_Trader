@@ -1,4 +1,4 @@
-ㅕ# config/settings.py
+# config/settings.py
 
 import requests
 from binance.client import Client
