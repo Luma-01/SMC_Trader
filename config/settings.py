@@ -2,6 +2,7 @@
 
 import requests
 from binance.client import Client
+from exchange.binance_api import _fetch_exchange_info     # ★ 추가
 from dotenv import load_dotenv
 import os
 from notify.discord import send_discord_debug
@@ -117,18 +118,25 @@ def fetch_top_futures_symbols(
         send_discord_debug(msg, "binance")
         return []
 
-def fetch_symbol_info(
-    symbols,
-    required: int = TOP_SYMBOL_LIMIT
-):
-    info = requests.get("https://api.binance.com/api/v3/exchangeInfo").json()
-    all_symbols = {s['symbol']: s for s in info['symbols']}
+def fetch_symbol_info(symbols, required: int = TOP_SYMBOL_LIMIT):
+    """
+    ▸ 심볼마다 선물 exchangeInfo 단건 조회 (v2→v1 fallback)  
+    ▸ 신규 상장이라도 100 % 응답 → ‘누락’ 경고 사라짐
+    """
+    all_symbols: dict[str, dict] = {}
+    for sym in symbols:
+        try:
+            ei = _fetch_exchange_info(sym)
+            if ei and ei["symbols"]:
+                all_symbols[sym] = ei["symbols"][0]
+        except Exception:
+            pass        # 네트워크 오류는 나중에 한꺼번에 경고
     max_leverages = fetch_max_leverages()
     result = {}
 
     for symbol in symbols:
         if symbol not in all_symbols:
-            msg = f"⚠️ [BINANCE] 심볼 누락: {symbol} - exchangeInfo 응답에 없음"
+            msg = f"⚠️ [BINANCE] 심볼 누락: {symbol} – 단일 exchangeInfo 실패"
             print(msg)
             send_discord_debug(msg, "binance")
             continue
