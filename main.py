@@ -600,6 +600,20 @@ def force_entry(symbol, side, qty_override=None):
             set_leverage(symbol, leverage)      # 미리 적용
             size = calculate_quantity(symbol, price, get_available_balance(), leverage)
 
+            # ─── 최소 주문 금액(minNotional) 강제 충족 ───
+            from exchange.binance_api import _get_min_notional, ensure_futures_filters
+            mn  = _get_min_notional(symbol, default=20)     # ETH 선물은 20 USDT
+            # LOT_SIZE(stepSize) 도 필요
+            step = 1.0
+            for f in ensure_futures_filters(symbol).get("filters", []):
+                if f["filterType"] == "LOT_SIZE":
+                    step = float(f["stepSize"])
+                    break
+            if size * price < mn:           # 부족하면 stepSize 단위로 끌어올림
+                import math
+                need_steps = math.ceil(mn / (price * step))
+                size       = round(need_steps * step, 8)   # 반올림 자릿수는 충분히 크게
+
     if size <= 0:
         print("❌ 최소 주문 수량 미달 – 강제 진입 취소")
         return
