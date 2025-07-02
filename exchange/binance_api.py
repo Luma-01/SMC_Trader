@@ -363,8 +363,11 @@ def place_order_with_tp_sl(
                 if val is None:
                     continue
                 val = float(val)
-                # 여러 값이 있으면 가장 작은 것만 채택
-                min_notional_tp = val if min_notional_tp is None else min(min_notional_tp, val)
+                # 50 USDT 이상은 위험한도 → 스킵
+                if val < 50:
+                    min_notional_tp = (
+                        val if min_notional_tp is None else min(min_notional_tp, val)
+                    )
 
         # ─── MIN_NOTIONAL 보정 로직 개편 ─────────────────────
         # ① half_qty 로는 5 USDT 를 못 넘길 때,
@@ -624,8 +627,9 @@ def calculate_quantity(
                 if val is None:
                     continue
                 val = float(val)
-                # 🔸 여러 MIN_NOTIONAL 필터가 있을 수도 있으므로 **최솟값** 유지
-                min_notional = val if min_notional is None else min(min_notional, val)
+                # 🔸 50 USDT 이상은 “위험한도”이므로 무시
+                if val < 50:
+                    min_notional = val if min_notional is None else min(min_notional, val)
         if step_size is None:
             print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
             return 0.0
