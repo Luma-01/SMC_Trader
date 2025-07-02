@@ -14,7 +14,7 @@ load_dotenv()
 #     zone_or_mss  →  HTF 존 OR LTF MSS  어느 쪽이든 True
 #                    (즉 존만 맞으면 바로 진입)
 # ───────────────────────────────────────────────
-ENTRY_METHOD = os.getenv("ENTRY_METHOD", "zone_and_mss").lower()
+ENTRY_METHOD = os.getenv("ENTRY_METHOD", "zone_or_mss").lower()
 # 사용 예:  `.env`   ENTRY_METHOD=zone_or_mss
 
 # ───────────────────────────────────────────────
