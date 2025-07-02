@@ -46,7 +46,10 @@ from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
-from core.confirmation import confirm_ltf_reversal   # ← 추가
+# ── LTF MSS 컨펌 유틸
+from core.confirmation import confirm_ltf_reversal
+# ── 진입 방식(zone_and_mss | zone_or_mss)
+from config.settings import ENTRY_METHOD
 from config.settings import ENTRY_METHOD
 # 〃 무효-블록 유틸 가져오기
 from core.iof import is_invalidated, mark_invalidated
@@ -346,6 +349,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 get_total_balance(),         # ← 전체 시드 전달
                 leverage,
             )
+            print(f"[BINANCE] 잔고={get_total_balance():.2f}, "
+                  f"calc_qty={qty}, entry={entry:.4f}")  # ★ 추가
             if qty <= 0:
                 return
             order_ok = binance_order_with_tp_sl(
