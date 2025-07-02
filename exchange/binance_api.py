@@ -358,12 +358,8 @@ def place_order_with_tp_sl(
         for f in ei.get("filters", []):
             if f["filterType"] == "MIN_NOTIONAL":
                 val = f.get("minNotional") or f.get("notional")
-                if val is None:
-                    continue
-                val = float(val)
-                # 50 USDT 이상이면 위험한도로 판단하고 무시
-                if val < 50:
-                    min_notional_tp = val
+                if val is not None:
+                    min_notional_tp = float(val)
                     break
 
         # ─── MIN_NOTIONAL 보정 로직 개편 ─────────────────────
@@ -617,16 +613,12 @@ def calculate_quantity(
             if f['filterType'] == 'LOT_SIZE':
                 step_size = float(f['stepSize'])
             elif f['filterType'] == 'MIN_NOTIONAL':
-                # ▸ Binance 는 같은 필터 안에
-                #     notional(위험한도)  vs  minNotional(실주문 최소) 
-                #   두 값을 모두 줄 때가 있다.
-                val = f.get('minNotional') or f.get('notional')   # 우선 minNotional
+                #       ↳ 23-Q4 이후 ‘minNotional’ 이 없고  
+                #         ‘notional’ 만 주는 심볼(ETH 등)이 많음
+                val = f.get("minNotional") or f.get("notional")
                 if val is None:
                     continue
-                val = float(val)
-                # “위험한도(보통 100·1000…)” 는 50 USDT 이상이므로 제외
-                if val < 50:
-                    min_notional = val if min_notional is None else min(min_notional, val)
+                min_notional = float(val)
         if step_size is None:
             print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
             return 0.0
