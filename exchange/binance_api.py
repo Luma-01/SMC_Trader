@@ -27,9 +27,14 @@ ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 # ──────────────────────────────────────────────────────────
 #  🤖 exchangeInfo 헬퍼 (v2 우선 → v1 백업 → LRU 캐시)
 # ──────────────────────────────────────────────────────────
-_EI_CACHE: dict[str, tuple[float, dict]] = {}   # {sym: (ts, data)}
+_EI_CACHE: dict[str, tuple[float, dict]] = {}   # {SYM(UPPER): (ts, data)}
 
-def _fetch_exchange_info(symbol: str | None = None, *, _ttl=300):
+def _fetch_exchange_info(
+    symbol: str | None = None,
+    *,
+    _ttl: int = 300,
+    _skip_v2: bool = False,          # ← NEW
+):
     """
     ▸ v2 → v1 순으로 조회  
     ▸ symbol=None  : 전체 목록  
@@ -37,24 +42,26 @@ def _fetch_exchange_info(symbol: str | None = None, *, _ttl=300):
     ▸ 5 분 LRU 캐시 적용
     """
     now = time.time()
-    if symbol and (cached := _EI_CACHE.get(symbol)):
+    key = symbol.upper() if symbol else None
+    if symbol and (cached := _EI_CACHE.get(key)):
         ts, data = cached
         if now - ts < _ttl:
             return data
 
     base = "https://fapi.binance.com/fapi"
-    try:       # ① v2 시도
-        url = f"{base}/v2/exchangeInfo"
-        if symbol:
-            url += f"?symbol={symbol.upper()}"
-        res = requests.get(url, timeout=3).json()
-        if symbol:
-            res = {"symbols": [res["symbols"][0]]}
-        if symbol:
-            _EI_CACHE[symbol] = (now, res)
-        return res
-    except Exception:
-        pass
+    # ① v2 시도 (필터가 필요 없는 곳에서만)
+    if not _skip_v2:
+        try:
+            url = f"{base}/v2/exchangeInfo"
+            if symbol:
+                url += f"?symbol={symbol.upper()}"
+            res = requests.get(url, timeout=3).json()
+            if symbol:
+                res = {"symbols": [res["symbols"][0]]}
+                _EI_CACHE[key] = (now, res)
+            return res
+        except Exception:
+            pass
 
     try:       # ② v1 백업
         if symbol:
@@ -65,7 +72,7 @@ def _fetch_exchange_info(symbol: str | None = None, *, _ttl=300):
         else:
             res = client.futures_exchange_info()
         if symbol:
-            _EI_CACHE[symbol] = (now, res)
+            _EI_CACHE[key] = (now, res)
         return res
     except Exception:
         pass                                        # v1-단건 실패
@@ -83,7 +90,7 @@ def _fetch_exchange_info(symbol: str | None = None, *, _ttl=300):
                     if s["symbol"] == symbol.upper()
                 ]
             }
-            _EI_CACHE[symbol] = (time.time(), res)
+            _EI_CACHE[key] = (time.time(), res)
         return res
     except Exception:
         pass
@@ -100,7 +107,8 @@ def ensure_futures_filters(symbol: str) -> dict:
     보장해서 돌려준다. 캐시에 빈 값이 들어가 있으면 즉시 새로 받아서
     캐시를 교체한다.
     """
-    ei = _fetch_exchange_info(symbol)
+    # v2는 필터가 없으므로 처음부터 v1 전용으로 받아온다
+    ei = _fetch_exchange_info(symbol, _ttl=0, _skip_v2=True)
     def _has_filters(rec: dict) -> bool:
         flt = rec.get("filters", [])
         return any(f["filterType"] == "LOT_SIZE" for f in flt) and \
@@ -108,8 +116,8 @@ def ensure_futures_filters(symbol: str) -> dict:
 
     if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
         # ── 캐시 제거 후 1차 재조회 ─────────────────────────
-        _EI_CACHE.pop(symbol, None)
-        ei = _fetch_exchange_info(symbol)
+        _EI_CACHE.pop(symbol.upper(), None)              # 잘못된 캐시 제거
+        ei = _fetch_exchange_info(symbol, _ttl=0, _skip_v2=True)
 
         # ── 그래도 필터가 없으면 : 전체 snapshot 에서 강제 추출 ──
         if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
@@ -120,7 +128,7 @@ def ensure_futures_filters(symbol: str) -> dict:
                     if s["symbol"] == symbol.upper()
                 )
                 ei = {"symbols": [sym_rec]}
-                _EI_CACHE[symbol] = (time.time(), ei)          # 캐시 교체
+                _EI_CACHE[symbol.upper()] = (time.time(), ei)  # 캐시 교체
             except Exception:
                 ei = {"symbols": []}   # 최종 실패
 
