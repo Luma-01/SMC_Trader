@@ -533,6 +533,11 @@ async def reconcile_internal_with_live():
             pm.init_position(sym, dir_, entry, sl, tp)
     """
 
+
+# main.py (전략 루프 시작 직전에)
+from config.settings import ENTRY_METHOD
+print(f"[DEBUG] ENTRY_METHOD = {ENTRY_METHOD}")   # ★ 한 줄만 추가
+
 async def main():
     initialize()
     await asyncio.gather(
