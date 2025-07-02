@@ -60,7 +60,7 @@ TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 RR = 2.0
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
-DEFAULT_LEVERAGE = 30
+DEFAULT_LEVERAGE = 20
 CUSTOM_LEVERAGES = {}
 
 # ─────────────────────────────────────────────
@@ -68,7 +68,7 @@ CUSTOM_LEVERAGES = {}
 #   0.10  ==  10 %   /  0.05 ==  5 %
 #   코드 곳곳에서 import 해서 사용합니다.
 # ─────────────────────────────────────────────
-TRADE_RISK_PCT = 0.25
+TRADE_RISK_PCT = 0.1
 
 def fetch_max_leverages():
     if not ENABLE_BINANCE:

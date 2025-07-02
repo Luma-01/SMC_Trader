@@ -256,7 +256,7 @@ def place_order_with_tp_sl(
 
         # ──────── 시장 진입 재시도 루프 ────────
         # ← LOT_SIZE 정보 미리 확보
-        step   = float(get_tick_size(symbol) ** 0)      # tick → 0.0001 등, **0 = 1
+        step   = 1.0  # 수량 라운딩 기본단위 (가격 tickSize 는 아래에서 별도 사용)
         ei     = ensure_futures_filters(symbol)
         prec   = 1
         for f in ei.get("filters", []):
@@ -265,7 +265,9 @@ def place_order_with_tp_sl(
                 prec = abs(int(round(-1 * math.log10(step))))
                 break
 
-        qty_try = round(quantity, prec)
+        # ── **여기서도** 다시 한 번 stepSize 배수 보정 ──
+        qty_try = math.floor(quantity / step) * step
+        qty_try = float(format(qty_try, f'.{prec}f'))
         for attempt in range(3):
             try:
                 entry_res = client.futures_create_order(
@@ -310,7 +312,12 @@ def place_order_with_tp_sl(
         # ── ① 가격 자릿수 보정 + Δ≥1 tick 확보 ────────────
         tick = get_tick_size(symbol)                        # Decimal
 
-        # 기본 라운딩
+        # ───── SL 음수(또는 0) 방어 ───────────────────────────────────
+        if float(sl) <= 0:
+            # 체결가의 50 % 를 임시 SL 로 사용 (시장가 대비 대략-최하단)
+            sl = float(entry_res["fills"][0]["price"]) * 0.5
+
+        # 기본 라운딩 ─────────────────────────────────────────────────
         if side == "buy":                                   # LONG
             tp_dec = Decimal(str(tp)).quantize(tick, ROUND_UP)
             sl_dec = Decimal(str(sl)).quantize(tick, ROUND_DOWN)
@@ -328,8 +335,6 @@ def place_order_with_tp_sl(
             tp_dec = last_price + tick
         if side == "sell" and last_price - tp_dec < tick:   # SHORT TP ↓
             tp_dec = last_price - tick
-
-        # SL은 STOP_MARKET이므로 배수만 맞으면 충분 → Δ 확인 불필요   # ↑
 
         tp_str = format(tp_dec, 'f')
         sl_str = format(sl_dec, 'f')
@@ -358,7 +363,8 @@ def place_order_with_tp_sl(
         # ─── MIN_NOTIONAL 보정 로직 개편 ─────────────────────
         # ① half_qty 로는 5 USDT 를 못 넘길 때,
         # ② ‘필요 최소 수량’만큼만 늘리되 **전량을 초과하지 않음**.
-        if min_notional_tp and half_qty * float(tp) < min_notional_tp:
+        real_tp = float(tp_dec)          # 라운딩 후 가격
+        if min_notional_tp and half_qty * real_tp < min_notional_tp:
             # 5 USDT / 가격 → 필요 계약수 → stepSize 로 올림
             need_steps = math.ceil(min_notional_tp / (float(tp) * step))
             adj_qty    = need_steps * step
@@ -564,7 +570,12 @@ def get_quantity_precision(symbol: str) -> int:
             if f['filterType'] == 'LOT_SIZE':
                 step_size = float(f['stepSize'])
                 precision = abs(int(round(-1 * math.log10(step_size))))
-                return precision
+
+                # ────────────────────────────────────────────────
+                #  🔒 1) Risk-Budget 〈 MIN_NOTIONAL  ⇒  거래 스킵
+                #     예) ETHUSDT  min_notional=100  but budget≈12
+                # ────────────────────────────────────────────────
+                return precision   # ← 여기엔 아무런 Risk-check 도 두지 않습니다
     except BinanceAPIException as e:
         print(f"[BINANCE] 수량 자리수 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] 수량 자리수 조회 실패 → {e}", "binance")
@@ -575,7 +586,7 @@ def get_tick_size(symbol: str) -> Decimal:
         ei = ensure_futures_filters(symbol)
         for f in ei.get('filters', []):
             if f['filterType'] == 'PRICE_FILTER':
-                return Decimal(f['tickSize']).normalize()
+                return Decimal(f['tickSize'])
     except Exception as e:
         print(f"[BINANCE] tick_size 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
@@ -600,7 +611,8 @@ def calculate_quantity(
             if f['filterType'] == 'LOT_SIZE':
                 step_size = float(f['stepSize'])
             elif f['filterType'] == 'MIN_NOTIONAL':
-                min_notional = float(f['notional'])
+                # 23-Q4 이후 일부 심볼은 키가 minNotional 로 변경
+                min_notional = float(f.get('notional', f.get('minNotional', 5.0)))
         if step_size is None:
             print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
             return 0.0
@@ -608,24 +620,52 @@ def calculate_quantity(
             min_notional = 5.0     # 바이낸스 기본
         precision = abs(int(round(-1 * math.log10(step_size))))
 
-        # ───── 명목가(min_notional) 만족하도록 보정 ─────
-        steps = math.floor(raw_qty / step_size)
+        # ───── 명목가(min_notional) + 최소 1-step 확보 ─────
+        steps = max(1, math.floor(raw_qty / step_size))
         notional = steps * step_size * price
+        # ① minNotional 확보 (리스크 범위 내에서만)
         if notional < min_notional:
-            needed_steps = math.ceil(min_notional / (step_size * price))
-            steps = max(steps, needed_steps)
-        qty = round(steps * step_size, precision)
+            max_affordable = usdt_balance * leverage      # 최대 가능 Notional
 
-        # ── 리스크 한도 초과 시 : 최소 notional(5 USDT) 만큼은 예외 허용 ──
-        max_notional = usdt_balance * leverage * 0.95
-        min_notional = max(5.0, min_notional)      # 안전망
-
-        if qty * price > max_notional:
-            # ① 리스크 한도보다 약간 크더라도 min_notional 이내면 통과
-            if min_notional <= qty*price <= min(max_notional, min_notional*1.05):
-                pass      # 허용
-            else:
+            # ▸ minNotional 자체를 못 채우면 **주문 스킵**
+            if min_notional > max_affordable:
+                print(f"[Q][SKIP] {symbol} minNotional={min_notional} "
+                      f"> affordable={max_affordable:.2f}")
                 return 0.0
+
+            # ▸ 예산 내에서만 수량을 올려 minNotional 만족
+            steps = math.ceil(min_notional / (step_size * price))
+        # ▸ “무조건 stepSize 배수” 로 잘라낸 뒤 문자열-포맷
+        qty = math.floor(steps * step_size / step_size) * step_size
+        qty = float(format(qty, f'.{precision}f'))
+
+        # ───── stepSize(최소 주문 단위) 미만이면 바로 스킵 ─────
+        if qty < step_size:
+            print(f"[Q][SKIP] {symbol} qty<{step_size} (calc={qty})")
+            return 0.0
+
+        # ② Risk-Cap : 예산을 절대로 넘지 않도록 (여유 버퍼 제거)
+        max_notional = usdt_balance * leverage
+        if qty * price > max_notional:
+            steps_cap = math.floor(max_notional / (step_size * price))
+            if steps_cap == 0:                 # 캡이 5 USDT 미만이면 포기
+                return 0.0
+            qty = round(steps_cap * step_size, precision)
+
+            # 캡 안으로 낮췄더니 minNotional 을 깨면 → 최소 수량으로 재계산
+            if qty * price < min_notional:
+                steps_min = math.ceil(min_notional / (step_size * price))
+                if steps_min * step_size * price > max_notional:
+                    return 0.0                 # 양쪽 조건을 동시에 만족 못 함
+                qty = round(steps_min * step_size, precision)
+
+        if qty < step_size:           # stepSize 미만은 곧장 스킵
+            print(
+                f"[Q][SKIP] {symbol} qty=0 | "
+                f"cap={max_notional:.2f} minNotional={min_notional:.2f} "
+                f"step={step_size} price={price}"
+            )
+
         return qty
     except Exception as e:
         print(f"[BINANCE] ❌ 수량 계산 실패: {e}")
@@ -662,10 +702,29 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         if qty_full == 0:
             return False
 
-        # 기본 정책 : 절반 익절
-        step  = float(get_tick_size(symbol) ** 0)  # = 1.0 (수량 반올림용)
-        prec  = get_quantity_precision(symbol)
-        qty   = round(max(step, qty_full / 2), prec)
+        # ── LOT_SIZE 기반 수량 라운딩 ───────────────────────────────
+        step = 1.0
+        ei   = ensure_futures_filters(symbol)
+        for f in ei.get("filters", []):
+            if f["filterType"] == "LOT_SIZE":
+                step = float(f["stepSize"])
+                break
+        prec = get_quantity_precision(symbol)
+
+        # 기본 정책 : 절반 익절(최소 1-step 보장)
+        from decimal import Decimal, ROUND_DOWN
+        d_step = Decimal(str(step))
+        qty_half = max(d_step, Decimal(str(qty_full)) / 2)
+        qty = (qty_half // d_step) * d_step
+        qty = float(qty.quantize(d_step, ROUND_DOWN))
+        # stepSize 미만이면 → 전량 TP
+        if qty < step:
+            qty = round(math.floor(qty_full / step) * step, prec)
+
+        # 0 이면 안전 탈출
+        if qty == 0:
+            print(f"[TP 갱신] {symbol} qty 계산 실패(step={step}, full={qty_full})")
+            return False
 
         # ③ 기존 reduce-only LIMIT 주문 취소
         try:

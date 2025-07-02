@@ -59,10 +59,9 @@ from exchange.router import get_open_position     # (Gate·Binance 공용)
 if ENABLE_BINANCE:
     from exchange.binance_api import (
         place_order_with_tp_sl as binance_order_with_tp_sl,
-        get_total_balance,
+        get_available_balance,              # ← free-balance 전용
         get_tick_size, calculate_quantity,
         set_leverage, get_max_leverage,
-        get_available_balance,
         get_open_position as binance_pos,
     )
 # Gate.io 연동은 ENABLE_GATE 가 True 일 때만 임포트
@@ -342,15 +341,13 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 qty, tp, sl, leverage
             )
         else:
-            # ⚠️  진입 비중 = “총 잔고 10 %”
-            qty = calculate_quantity(
-                symbol,
-                entry,
-                get_total_balance(),         # ← 전체 시드 전달
-                leverage,
-            )
-            print(f"[BINANCE] 잔고={get_total_balance():.2f}, "
-                  f"calc_qty={qty}, entry={entry:.4f}")  # ★ 추가
+            # ⚠️  **리스크 예산**은 ‘지금 당장 쓸 수 있는’ 잔고 기준으로!
+            avail = get_available_balance()          # ✅ free balance
+            qty = calculate_quantity(symbol, entry, avail, leverage)
+
+            # 디버그 로그도 동일 기준으로 맞춰준다
+            print(f"[BINANCE] 사용가능잔고={avail:.2f}, "
+                  f"calc_qty={qty}, entry={entry:.4f}")
             if qty <= 0:
                 return
             order_ok = binance_order_with_tp_sl(
