@@ -47,6 +47,7 @@ from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
 from core.confirmation import confirm_ltf_reversal   # ← 추가
+from config.settings import ENTRY_METHOD
 # 〃 무효-블록 유틸 가져오기
 from core.iof import is_invalidated, mark_invalidated
 # ────────────── 모드별 import ──────────────
@@ -207,10 +208,11 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         if not signal or direction is None:
             return
 
-        # ───── LTF(1m·5m) 반전이 확인될 때까지 대기 ─────
-        if not confirm_ltf_reversal(ltf, direction):
-            print(f"[WAIT] {symbol} – 아직 LTF 리젝션 미확인. 진입 보류")
-            return
+        # ───── zone_and_mss 모드에서만 MSS 리젝션을 기다린다 ─────
+        if ENTRY_METHOD != "zone_or_mss":
+            if not confirm_ltf_reversal(ltf, direction):
+                print(f"[WAIT] {symbol} – 아직 LTF 리젝션 미확인. 진입 보류")
+                return
 
         entry = float(ltf["close"].iloc[-1])
         # Zone 기반 SL/TP 계산 (OB 사용)
