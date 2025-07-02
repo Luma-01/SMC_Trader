@@ -108,7 +108,7 @@ def ensure_futures_filters(symbol: str) -> dict:
     캐시를 교체한다.
     """
     # v2는 필터가 없으므로 처음부터 v1 전용으로 받아온다
-    ei = _fetch_exchange_info(symbol, _ttl=0, _skip_v2=True)
+    ei = _fetch_exchange_info(symbol, _ttl=60, _skip_v2=True)
     def _has_filters(rec: dict) -> bool:
         flt = rec.get("filters", [])
         return any(f["filterType"] == "LOT_SIZE" for f in flt) and \
@@ -117,7 +117,7 @@ def ensure_futures_filters(symbol: str) -> dict:
     if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
         # ── 캐시 제거 후 1차 재조회 ─────────────────────────
         _EI_CACHE.pop(symbol.upper(), None)              # 잘못된 캐시 제거
-        ei = _fetch_exchange_info(symbol, _ttl=0, _skip_v2=True)
+        ei = _fetch_exchange_info(symbol, _ttl=60, _skip_v2=True)
 
         # ── 그래도 필터가 없으면 : 전체 snapshot 에서 강제 추출 ──
         if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
@@ -616,9 +616,16 @@ def calculate_quantity(
             steps = max(steps, needed_steps)
         qty = round(steps * step_size, precision)
 
-        # 증거금 실제 가능 여부(5 % 여유)를 다시 체크
-        if qty * price > usdt_balance * leverage * 0.95:
-            return 0.0
+        # ── 리스크 한도 초과 시 : 최소 notional(5 USDT) 만큼은 예외 허용 ──
+        max_notional = usdt_balance * leverage * 0.95
+        min_notional = max(5.0, min_notional)      # 안전망
+
+        if qty * price > max_notional:
+            # ① 리스크 한도보다 약간 크더라도 min_notional 이내면 통과
+            if min_notional <= qty*price <= min(max_notional, min_notional*1.05):
+                pass      # 허용
+            else:
+                return 0.0
         return qty
     except Exception as e:
         print(f"[BINANCE] ❌ 수량 계산 실패: {e}")
