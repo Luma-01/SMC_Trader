@@ -112,8 +112,8 @@ def _fetch_exchange_info(
     except Exception:
         pass
 
-    # 그래도 실패 → 마지막으로 기존(캐시) 스냅샷 반환
-    return client.futures_exchange_info()
+    # 그래도 실패 → “필터 없음” 으로 간주
+    return {"symbols": []}     # ← 상위 로직에서 바로 스킵하도록
 
 # ──────────────────────────────────────────────────────────────
 #  LOT_SIZE / PRICE_FILTER 가 누락된 경우를 대비한 헬퍼
@@ -149,6 +149,7 @@ def ensure_futures_filters(symbol: str) -> dict:
             except Exception:
                 ei = {"symbols": []}   # 최종 실패
 
+    # 필터 없는 심볼은 빈 dict
     return ei["symbols"][0] if ei.get("symbols") else {}
 
 # ════════════════════════════════════════════════════════
@@ -261,6 +262,12 @@ def place_order_with_tp_sl(
     ③ 실제 체결 수량으로 TP/SL 주문을 생성
     """
     try:
+        # ───────── 사전 필터 확인 ─────────
+        ei = ensure_futures_filters(symbol)
+        if not ei.get("filters"):
+            print(f"[SKIP] {symbol} – filters not found, maybe delisted?")
+            return False
+
         _ensure_mode_cached()
         position_side = "LONG" if side == "buy" else "SHORT"
         base_kwargs = dict(
@@ -274,7 +281,7 @@ def place_order_with_tp_sl(
         # ──────── 시장 진입 재시도 루프 ────────
         # ← LOT_SIZE 정보 미리 확보
         step   = 1.0  # 수량 라운딩 기본단위 (가격 tickSize 는 아래에서 별도 사용)
-        ei     = ensure_futures_filters(symbol)
+        # 위에서 이미 가져온 ei 사용
         prec   = 1
         for f in ei.get("filters", []):
             if f["filterType"] == "LOT_SIZE":
@@ -347,7 +354,11 @@ def place_order_with_tp_sl(
             raise ValueError(f"시장 주문 미체결: {entry_res}")
 
         # ── ① 가격 자릿수 보정 + Δ≥1 tick 확보 ────────────
-        tick = get_tick_size(symbol)                        # Decimal
+        try:
+            tick = get_tick_size(symbol)                    # Decimal
+        except ValueError as ve:
+            print(f"[SKIP] {ve}")
+            return False
 
         # ───── SL 음수(또는 0) 방어 ───────────────────────────────────
         if float(sl) <= 0:
@@ -375,6 +386,11 @@ def place_order_with_tp_sl(
 
         tp_str = format(tp_dec, 'f')
         sl_str = format(sl_dec, 'f')
+
+        # ── sanity check : SL·TP 음수/0 차단 ───────────────────────
+        if tp_dec <= 0 or sl_dec <= 0:
+            print(f"[SKIP] invalid SL/TP for {symbol}: sl={sl_dec}, tp={tp_dec}")
+            return False
 
         # DEBUG
         print(f"[DEBUG] {symbol} tick={tick}, tp={tp_str}, sl={sl_str}")
@@ -434,7 +450,7 @@ def place_order_with_tp_sl(
 
         sl_qty = math.floor(filled_qty / step) * step
         sl_qty = round(sl_qty, prec)
-        sl_kwargs = dict(
+        sl_kwargs = dict(          # (현재는 미사용 – 유지만)
             symbol      = symbol,
             side        = opposite_side,
             type        = ORDER_TYPE_STOP_MARKET,
@@ -628,16 +644,13 @@ def get_quantity_precision(symbol: str) -> int:
     return 3  # 기본값
 
 def get_tick_size(symbol: str) -> Decimal:
-    try:
-        ei = ensure_futures_filters(symbol)
-        for f in ei.get('filters', []):
-            if f['filterType'] == 'PRICE_FILTER':
-                # normalize() 로 의미-없는 0 제거 → 0.01000000 ➜ 0.01
-                return Decimal(f['tickSize']).normalize()
-    except Exception as e:
-        print(f"[BINANCE] tick_size 조회 실패: {e}")
-        send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
-    return Decimal("0.0001")
+    ei = ensure_futures_filters(symbol)
+    flt = ei.get("filters", []) if isinstance(ei, dict) else []
+    for f in flt:
+        if f["filterType"] == "PRICE_FILTER":
+            return Decimal(f["tickSize"]).normalize()
+    # 필터가 없으면 **즉시 예외** – 상위에서 스킵 처리
+    raise ValueError(f"[TICK] PRICE_FILTER not found for {symbol}")
 
 def calculate_quantity(
     symbol: str,
