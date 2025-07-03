@@ -632,7 +632,8 @@ def get_tick_size(symbol: str) -> Decimal:
         ei = ensure_futures_filters(symbol)
         for f in ei.get('filters', []):
             if f['filterType'] == 'PRICE_FILTER':
-                return Decimal(f['tickSize'])
+                # normalize() 로 의미-없는 0 제거 → 0.01000000 ➜ 0.01
+                return Decimal(f['tickSize']).normalize()
     except Exception as e:
         print(f"[BINANCE] tick_size 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
