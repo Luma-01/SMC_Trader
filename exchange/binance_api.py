@@ -282,12 +282,12 @@ def place_order_with_tp_sl(
         # ← LOT_SIZE 정보 미리 확보
         step   = 1.0  # 수량 라운딩 기본단위 (가격 tickSize 는 아래에서 별도 사용)
         # 위에서 이미 가져온 ei 사용
-        prec   = 1
         for f in ei.get("filters", []):
             if f["filterType"] == "LOT_SIZE":
-                step = float(f["stepSize"])             # ex) 0.1
-                prec = abs(int(round(-1 * math.log10(step))))
+                step = float(f["stepSize"])
                 break
+
+        prec = get_quantity_precision(symbol)   # ← NEW
 
         # ── **여기서도** 다시 한 번 stepSize 배수 보정 ──
         from decimal import Decimal, ROUND_DOWN
@@ -632,20 +632,30 @@ def get_total_balance() -> float:
 def get_quantity_precision(symbol: str) -> int:
     try:
         ei = ensure_futures_filters(symbol)
-        for f in ei.get('filters', []):
-            if f['filterType'] == 'LOT_SIZE':
-                step_size = float(f['stepSize'])
-                precision = abs(int(round(-1 * math.log10(step_size))))
 
-                # ────────────────────────────────────────────────
-                #  🔒 1) Risk-Budget 〈 MIN_NOTIONAL  ⇒  거래 스킵
-                #     예) ETHUSDT  min_notional=100  but budget≈12
-                # ────────────────────────────────────────────────
-                return precision   # ← 여기엔 아무런 Risk-check 도 두지 않습니다
-    except BinanceAPIException as e:
+        # LOT_SIZE 찾기
+        step_size = None
+        for f in ei.get("filters", []):
+            if f["filterType"] == "LOT_SIZE":
+                step_size = float(f["stepSize"])
+                break
+        if step_size is None:          # 필터 없음 → 기본값
+            return 3
+
+        # ① 거래소가 정의한 자리수
+        precision_cfg = int(
+            ei.get("quantityPrecision") or ei.get("qtyPrecision") or 8
+        )
+
+        # ② stepSize 로 계산한 자리수
+        precision_step = abs(int(round(-1 * math.log10(step_size))))
+
+        return min(precision_cfg, precision_step)
+
+    except Exception as e:
         print(f"[BINANCE] 수량 자리수 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] 수량 자리수 조회 실패 → {e}", "binance")
-    return 3  # 기본값
+        return 3
 
 def get_tick_size(symbol: str) -> Decimal:
     ei = ensure_futures_filters(symbol)
