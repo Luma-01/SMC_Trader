@@ -114,9 +114,8 @@ def set_pm(manager):
 
 
 # ----------------------------------------------- REST / WS End-points
-# ▶ USDT-M Futures 전용 엔드포인트
-BINANCE_REST_URL = "https://fapi.binance.com/fapi"          # ← spot → futures
-BINANCE_WS_URL   = "wss://fstream.binance.com/stream?streams="
+BINANCE_REST_URL = "https://api.binance.com"
+BINANCE_WS_URL   = "wss://stream.binance.com:9443/stream?streams="
 # Gate Futures v4 USDT-settled WS
 GATE_WS_URL      = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 
@@ -152,8 +151,8 @@ candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
 def load_historical_candles_binance(
     symbol: str, interval: str, limit: int = CANDLE_LIMIT
 ):
-    # USDT-M 선물 klines  (…/fapi/v1/klines)
-    url = f"{BINANCE_REST_URL}/v1/klines"
+    # Binance REST 는 'BTCUSDT' 형태만 허용
+    url = f"{BINANCE_REST_URL}/api/v3/klines"
     params = {
         "symbol": to_binance(symbol),        # canonical → Binance
         "interval": interval,

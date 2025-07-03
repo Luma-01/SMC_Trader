@@ -170,9 +170,6 @@ class PositionManager:
                 sl = entry * (1 + min_rr)
 
         # ─── ② TP를 SL 기준으로 재계산 --------------------
-        # 음수-SL 방지 및 최소 0.1 % 리스크 보장
-        if sl <= 0:
-            sl = entry * (0.999 if direction == "long" else 1.001)
         risk = abs(entry - sl)
         tp = entry + risk * RR if direction == "long" else entry - risk * RR
 

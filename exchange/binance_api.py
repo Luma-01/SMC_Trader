@@ -1,9 +1,9 @@
 # exchange/binance_api.py
 
+import time
 import os
 import math
-import requests, functools, time, re
-from decimal import Decimal, ROUND_DOWN, ROUND_UP, ROUND_CEILING
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from config.settings import TRADE_RISK_PCT
 from typing import Optional
 from dotenv import load_dotenv
@@ -23,164 +23,6 @@ client = Client(api_key, api_secret, tld='com')
 client.API_URL = "https://fapi.binance.com/fapi"
 ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
 ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
-
-# ────────────────────────────────────────────────
-#  📌 stepSize 헬퍼
-#     ▸ MARKET_LOT_SIZE > LOT_SIZE 우선
-# ────────────────────────────────────────────────
-def _select_step_size(ei: dict) -> float:
-    """
-    Futures 심볼의 유효 stepSize 반환.
-      1) MARKET_LOT_SIZE가 있으면 그것
-      2) 아니면 LOT_SIZE
-      3) 둘 다 없으면 1.0
-    """
-    mkt = lot = None
-    for f in ei.get("filters", []):
-        if f["filterType"] == "MARKET_LOT_SIZE":
-            mkt = float(f["stepSize"])
-        elif f["filterType"] == "LOT_SIZE":
-            lot = float(f["stepSize"])
-    return mkt or lot or 1.0
-
-# ────────────────────────────────────────────────
-#  ▸ 심볼별 “실제” MIN_NOTIONAL(보통 5·10·20) 헬퍼
-#     - 위험한도(100·1000…)는 제외
-# ────────────────────────────────────────────────
-def _get_min_notional(symbol: str, default: float = 5.0) -> float:
-    ei = ensure_futures_filters(symbol)
-    cache_key = symbol.upper()
-    if (cached := _MN_CACHE.get(cache_key)):
-        ts, val = cached
-        if time.time() - ts < 600:   # 10 분
-            return val
-    mn: float | None = None
-    for f in ei.get("filters", []):
-        if f["filterType"] == "MIN_NOTIONAL":
-            val = f.get("minNotional") or f.get("notional")
-            if val is None:
-                continue
-            val = float(val)
-            if val < 50:                 # 50 USDT 이상 = 위험한도(무시)
-                # 👉 “여러 값” 중 **가장 큰 값**을 하한으로 채택
-                mn = val if mn is None else max(mn, val)
-    mn = mn if mn is not None else default
-    _MN_CACHE[cache_key] = (time.time(), mn)
-    return mn
-
-# ──────────────────────────────────────────────────────────
-#  🤖 exchangeInfo 헬퍼 (v2 우선 → v1 백업 → LRU 캐시)
-# ──────────────────────────────────────────────────────────
-# ─── exchangeInfo 스냅샷 캐시  ─────────────────────────────────────────────
-_EI_CACHE: dict[str, tuple[float, dict]] = {}   # {SYM(UPPER): (ts, data)}
-# ─── minNotional 전용 LRU 캐시  ───────────────────────────────────────────
-_MN_CACHE: dict[str, tuple[float, float]] = {}  # {SYM(UPPER): (ts, minN)}
-
-def _fetch_exchange_info(
-    symbol: str | None = None,
-    *,
-    _ttl: int = 300,
-    _skip_v2: bool = False,          # ← NEW
-):
-    """
-    ▸ v2 → v1 순으로 조회  
-    ▸ symbol=None  : 전체 목록  
-      symbol='ABC' : 단일 심볼만 담긴 dict 반환  
-    ▸ 5 분 LRU 캐시 적용
-    """
-    now = time.time()
-    key = symbol.upper() if symbol else None
-    if symbol and (cached := _EI_CACHE.get(key)):
-        ts, data = cached
-        if now - ts < _ttl:
-            return data
-
-    base = "https://fapi.binance.com/fapi"
-    # ① v2 시도 (필터가 필요 없는 곳에서만)
-    if not _skip_v2:
-        try:
-            url = f"{base}/v2/exchangeInfo"
-            if symbol:
-                url += f"?symbol={symbol.upper()}"
-            res = requests.get(url, timeout=3).json()
-            if symbol:
-                res = {"symbols": [res["symbols"][0]]}
-                _EI_CACHE[key] = (now, res)
-            return res
-        except Exception:
-            pass
-
-    try:       # ② v1 백업
-        if symbol:
-            res = client._request_futures_api(
-                "get", "exchangeInfo", params={"symbol": symbol.upper()}
-            )
-            res = {"symbols": [res["symbols"][0]]}
-        else:
-            res = client.futures_exchange_info()
-        if symbol:
-            _EI_CACHE[key] = (now, res)
-        return res
-    except Exception:
-        pass                                        # v1-단건 실패
-
-    # ── ③ 마지막 시도 : **전체 스냅샷 강제 재요청** ─────────────
-    try:
-        res = requests.get(
-            "https://fapi.binance.com/fapi/v1/exchangeInfo",
-            timeout=3
-        ).json()
-        if symbol:                                   # 단일 심볼 모드
-            res = {
-                "symbols": [
-                    s for s in res["symbols"]
-                    if s["symbol"] == symbol.upper()
-                ]
-            }
-            _EI_CACHE[key] = (time.time(), res)
-        return res
-    except Exception:
-        pass
-
-    # 그래도 실패 → “필터 없음” 으로 간주
-    return {"symbols": []}     # ← 상위 로직에서 바로 스킵하도록
-
-# ──────────────────────────────────────────────────────────────
-#  LOT_SIZE / PRICE_FILTER 가 누락된 경우를 대비한 헬퍼
-# ──────────────────────────────────────────────────────────────
-def ensure_futures_filters(symbol: str) -> dict:
-    """
-    필수 필터(LOT_SIZE, PRICE_FILTER)가 포함된 exchangeInfo 레코드를
-    보장해서 돌려준다. 캐시에 빈 값이 들어가 있으면 즉시 새로 받아서
-    캐시를 교체한다.
-    """
-    # v2는 필터가 없으므로 처음부터 v1 전용으로 받아온다
-    ei = _fetch_exchange_info(symbol, _ttl=60, _skip_v2=True)
-    def _has_filters(rec: dict) -> bool:
-        flt = rec.get("filters", [])
-        return any(f["filterType"] == "LOT_SIZE" for f in flt) and \
-               any(f["filterType"] == "PRICE_FILTER" for f in flt)
-
-    if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
-        # ── 캐시 제거 후 1차 재조회 ─────────────────────────
-        _EI_CACHE.pop(symbol.upper(), None)              # 잘못된 캐시 제거
-        ei = _fetch_exchange_info(symbol, _ttl=60, _skip_v2=True)
-
-        # ── 그래도 필터가 없으면 : 전체 snapshot 에서 강제 추출 ──
-        if not ei.get("symbols") or not _has_filters(ei["symbols"][0]):
-            try:
-                snap = client.futures_exchange_info()          # full
-                sym_rec = next(
-                    s for s in snap["symbols"]
-                    if s["symbol"] == symbol.upper()
-                )
-                ei = {"symbols": [sym_rec]}
-                _EI_CACHE[symbol.upper()] = (time.time(), ei)  # 캐시 교체
-            except Exception:
-                ei = {"symbols": []}   # 최종 실패
-
-    # 필터 없는 심볼은 빈 dict
-    return ei["symbols"][0] if ei.get("symbols") else {}
 
 # ════════════════════════════════════════════════════════
 # get_mark_price: SL 내부 로직용으로 markPrice 가져오기
@@ -292,28 +134,6 @@ def place_order_with_tp_sl(
     ③ 실제 체결 수량으로 TP/SL 주문을 생성
     """
     try:
-        # ──────────────────────────────────────────────
-        # 0. **입력값 방어막** ─ SL·TP 미정 or 음수일 때 자동 보정
-        #    · LONG  ➜ sl = price × 0.97 , tp = price × 1.03
-        #    · SHORT ➜ sl = price × 1.03 , tp = price × 0.97
-        # ──────────────────────────────────────────────
-        if tp <= 0 or sl <= 0:
-            _p = get_mark_price(symbol)
-            if _p == 0:                       # 시세 실패 → 포기
-                print(f"[SKIP] {symbol} – markPrice 0, cannot calc SL/TP")
-                return False
-            if side == "buy":
-                tp = round(_p * 1.03, 8)
-                sl = round(_p * 0.97, 8)
-            else:
-                tp = round(_p * 0.97, 8)
-                sl = round(_p * 1.03, 8)
-        # ───────── 사전 필터 확인 ─────────
-        ei = ensure_futures_filters(symbol)
-        if not ei.get("filters"):
-            print(f"[SKIP] {symbol} – filters not found, maybe delisted?")
-            return False
-
         _ensure_mode_cached()
         position_side = "LONG" if side == "buy" else "SHORT"
         base_kwargs = dict(
@@ -325,35 +145,19 @@ def place_order_with_tp_sl(
             base_kwargs["positionSide"] = position_side
 
         # ──────── 시장 진입 재시도 루프 ────────
-        # ← **MARKET_LOT_SIZE > LOT_SIZE** 한 줄로 선택
-        step = _select_step_size(ei)
+        # ← LOT_SIZE 정보 미리 확보
+        step   = float(get_tick_size(symbol) ** 0)  # tick → 0.0001 등, **0 = 1
+        exch   = client.futures_exchange_info()
+        prec   = 1
+        for s in exch["symbols"]:
+            if s["symbol"] == symbol.upper():
+                for f in s["filters"]:
+                    if f["filterType"] == "LOT_SIZE":
+                        step = float(f["stepSize"])     # ex) 0.1
+                        prec = abs(int(round(-1 * math.log10(step))))
+                        break
 
-        prec = get_quantity_precision(symbol)   # ← NEW
-
-        # ── **여기서도** 다시 한 번 stepSize 배수 보정 ──
-        from decimal import Decimal, ROUND_DOWN
-        d_step   = Decimal(str(step))
-        qty_try  = (Decimal(str(quantity))
-                    .quantize(d_step, ROUND_DOWN))  # stepSize 배수로 절삭
-        qty_try  = float(qty_try)  
-
-        # ▸ 진입 전, “실제” minNotional → 계약수 강제 보정
-        cur_price     = get_mark_price(symbol) or tp  # 실패 시 TP 가격 활용
-        min_notional  = _get_min_notional(symbol)
-        notional_try = qty_try * cur_price
-        # ── 최초 시도 디버그 ──────────────────────────────────────────────
-        send_discord_debug(
-            f"[ENTRY] {symbol} attempt=0 qty={qty_try} "
-            f"notional={notional_try:.4f} minN={min_notional}", "binance")
-        if notional_try < min_notional:
-            need_steps = math.ceil(
-                Decimal(str(min_notional / cur_price)).quantize(
-                    Decimal(str(step)), ROUND_CEILING
-                ) / Decimal(str(step))
-            )
-            qty_try = float(need_steps * step)
-            qty_try = float(format(qty_try, f'.{prec}f'))
-        qty_try = float(format(qty_try, f'.{prec}f'))
+        qty_try = round(quantity, prec)
         for attempt in range(3):
             try:
                 entry_res = client.futures_create_order(
@@ -362,40 +166,13 @@ def place_order_with_tp_sl(
                     **base_kwargs
                 )
             except BinanceAPIException as e:
-                # -2019 = 증거금 부족  
-                # -4164 = notional 부족  
-                # -1111 = precision 초과  ← NEW
-                if e.code == -2019 and attempt < 2:        # 증거금 부족 ↓
-                    qty_try = math.floor(qty_try * 0.9 / step) * step
-                    qty_try = round(qty_try, prec)
-                elif e.code in (-4164, -1111) and attempt < 2:
-                    # ① 에러 메시지에서 실제 하한 추출
-                    m = re.search(r"no smaller than (\d+(\.\d+)?)", str(e))
-                    if m:
-                        min_notional = float(m.group(1))
-                        _MN_CACHE[symbol.upper()] = (time.time(), min_notional)
-                    # ② precision 초과면 → stepSize 에 맞춰 **버림** 재계산
-                    if e.code == -1111:
-                        qty_try = math.floor(qty_try / step) * step
-                        qty_try = int(qty_try) if prec == 0 \
-                                  else float(format(qty_try, f'.{prec}f'))
-                        print(f"[RETRY] precision → 수량 {qty_try} 재시도({attempt+1}/3)")
-                        send_discord_debug(
-                            f"[ENTRY] {symbol} attempt={attempt+1} "
-                            f"qty={qty_try} (precision fix)", "binance")
-                        continue
-                    # ② 필요 수량 재산출
-                    need_steps = math.ceil(
-                        Decimal(str(min_notional / cur_price)).quantize(
-                            Decimal(str(step)), ROUND_CEILING
-                        ) / Decimal(str(step))
-                    )
-                    qty_try = float(need_steps * step)
-                    qty_try = float(format(qty_try, f'.{prec}f'))
-                    print(f"[RETRY] notional → 수량 {qty_try} 재시도({attempt+1}/3)")
-                    send_discord_debug(
-                        f"[ENTRY] {symbol} attempt={attempt+1} "
-                        f"qty={qty_try} minN={min_notional}", "binance")
+                # -2019 = 증거금 부족,  -4164 = notional 부족
+                if e.code in (-2019, -4164) and attempt < 2:
+                    factor   = 0.9 if e.code == -2019 else 1.1
+                    qty_try  = math.floor(qty_try * factor / step) * step
+                    qty_try  = round(qty_try, prec)
+                    reason = "margin" if e.code == -2019 else "notional"
+                    print(f"[RETRY] {reason} → 수량 {qty_try} 재시도({attempt+1}/3)")
                     continue
                 raise
 
@@ -423,19 +200,9 @@ def place_order_with_tp_sl(
             raise ValueError(f"시장 주문 미체결: {entry_res}")
 
         # ── ① 가격 자릿수 보정 + Δ≥1 tick 확보 ────────────
-        try:
-            tick = get_tick_size(symbol)                    # Decimal
-        except ValueError as ve:
-            print(f"[SKIP] {ve}")
-            return False
+        tick = get_tick_size(symbol)                        # Decimal
 
-        # 슬리피지로 SL 이 체결가와 뒤집어지는 경우를 한 틱 보정
-        if side == "buy" and sl_dec >= last_price:
-            sl_dec = (last_price - tick).quantize(tick, ROUND_DOWN)
-        if side == "sell" and sl_dec <= last_price:
-            sl_dec = (last_price + tick).quantize(tick, ROUND_UP)
-
-        # 기본 라운딩 ─────────────────────────────────────────────────
+        # 기본 라운딩
         if side == "buy":                                   # LONG
             tp_dec = Decimal(str(tp)).quantize(tick, ROUND_UP)
             sl_dec = Decimal(str(sl)).quantize(tick, ROUND_DOWN)
@@ -453,18 +220,11 @@ def place_order_with_tp_sl(
             tp_dec = last_price + tick
         if side == "sell" and last_price - tp_dec < tick:   # SHORT TP ↓
             tp_dec = last_price - tick
+ 
+        # SL은 STOP_MARKET이므로 배수만 맞으면 충분 → Δ 확인 불필요   # ↑
 
         tp_str = format(tp_dec, 'f')
         sl_str = format(sl_dec, 'f')
-
-        # ── sanity check ──────────────────────────────────────────
-        if tp_dec <= 0 or sl_dec <= 0:
-            print(f"[SKIP] invalid SL/TP for {symbol}: sl={sl_dec}, tp={tp_dec}")
-            return False
-        # TP 와 SL 이 같으면 최소 한 틱 벌리기
-        if tp_dec == sl_dec:
-            tp_dec = (tp_dec + tick) if side == "buy" else (tp_dec - tick)
-            tp_str = format(tp_dec, 'f')
 
         # DEBUG
         print(f"[DEBUG] {symbol} tick={tick}, tp={tp_str}, sl={sl_str}")
@@ -482,25 +242,18 @@ def place_order_with_tp_sl(
 
         # ── 바이낸스 MIN_NOTIONAL 필터 재검증 ────────────
         min_notional_tp = None
-        for f in ei.get("filters", []):
-            if f["filterType"] == "MIN_NOTIONAL":
-                val = f.get("minNotional")
-                if val is None:
-                    val = f.get("notional")
-                if val is None:
-                    continue
-                val = float(val)
-                # 50 USDT 이상은 위험한도 → 스킵
-                if val < 50:
-                    min_notional_tp = (
-                        val if min_notional_tp is None else min(min_notional_tp, val)
-                    )
+        for s in exch["symbols"]:
+            if s["symbol"] == symbol.upper():
+                for f in s["filters"]:
+                    if f["filterType"] == "MIN_NOTIONAL":
+                        min_notional_tp = float(f["notional"])
+                        break
+                break
 
         # ─── MIN_NOTIONAL 보정 로직 개편 ─────────────────────
         # ① half_qty 로는 5 USDT 를 못 넘길 때,
         # ② ‘필요 최소 수량’만큼만 늘리되 **전량을 초과하지 않음**.
-        real_tp = float(tp_dec)          # 라운딩 후 가격
-        if min_notional_tp and half_qty * real_tp < min_notional_tp:
+        if min_notional_tp and half_qty * float(tp) < min_notional_tp:
             # 5 USDT / 가격 → 필요 계약수 → stepSize 로 올림
             need_steps = math.ceil(min_notional_tp / (float(tp) * step))
             adj_qty    = need_steps * step
@@ -524,7 +277,7 @@ def place_order_with_tp_sl(
 
         sl_qty = math.floor(filled_qty / step) * step
         sl_qty = round(sl_qty, prec)
-        sl_kwargs = dict(          # (현재는 미사용 – 유지만)
+        sl_kwargs = dict(
             symbol      = symbol,
             side        = opposite_side,
             type        = ORDER_TYPE_STOP_MARKET,
@@ -701,40 +454,33 @@ def get_total_balance() -> float:
 # 심볼별 수량 소수점 자리수 조회
 def get_quantity_precision(symbol: str) -> int:
     try:
-        ei = ensure_futures_filters(symbol)
-
-        # LOT_SIZE (일반) 과 MARKET_LOT_SIZE 중 **더 큰 stepSize** 채택
-        step_size = None
-        for f in ei.get("filters", []):
-            if f["filterType"] in ("LOT_SIZE", "MARKET_LOT_SIZE"):
-                val = float(f["stepSize"])
-                step_size = val if step_size is None else max(step_size, val)
-        if step_size is None:          # 필터 없음 → 기본값
-            return 3
-
-        # ① 거래소가 정의한 자리수
-        precision_cfg = int(
-            ei.get("quantityPrecision") or ei.get("qtyPrecision") or 8
-        )
-
-        # ② stepSize 로 계산한 자리수
-        precision_step = abs(int(round(-1 * math.log10(step_size))))
-
-        return min(precision_cfg, precision_step)
-
-    except Exception as e:
+        exchange_info = client.futures_exchange_info()
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol.upper():
+                for f in s['filters']:
+                    if f['filterType'] == 'LOT_SIZE':
+                        step_size = float(f['stepSize'])
+                        precision = abs(int(round(-1 * math.log10(step_size))))
+                        return precision
+    except BinanceAPIException as e:
         print(f"[BINANCE] 수량 자리수 조회 실패: {e}")
         send_discord_debug(f"[BINANCE] 수량 자리수 조회 실패 → {e}", "binance")
-        return 3
+    return 3  # 기본값
 
 def get_tick_size(symbol: str) -> Decimal:
-    ei = ensure_futures_filters(symbol)
-    flt = ei.get("filters", []) if isinstance(ei, dict) else []
-    for f in flt:
-        if f["filterType"] == "PRICE_FILTER":
-            return Decimal(f["tickSize"]).normalize()
-    # 필터가 없으면 **즉시 예외** – 상위에서 스킵 처리
-    raise ValueError(f"[TICK] PRICE_FILTER not found for {symbol}")
+    try:
+        exchange_info = client.futures_exchange_info()
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol.upper():
+                for f in s['filters']:
+                    if f['filterType'] == 'PRICE_FILTER':
+                        # ex) "0.01000000" → Decimal('0.01')
+                        # 후행 0 제거(normalize)로 정확한 tick 단위를 확보
+                        return Decimal(f['tickSize']).normalize()
+    except Exception as e:
+        print(f"[BINANCE] tick_size 조회 실패: {e}")
+        send_discord_debug(f"[BINANCE] tick_size 조회 실패 → {e}", "binance")
+    return Decimal("0.0001")
 
 def calculate_quantity(
     symbol: str,
@@ -749,21 +495,15 @@ def calculate_quantity(
         raw_qty = notional / price
 
         # stepSize / notional 최소값 가져오기
-        ei = ensure_futures_filters(symbol)
-        step_size = _select_step_size(ei)
-        min_notional = None
-        for f in ei.get('filters', []):
-            if f['filterType'] == 'MIN_NOTIONAL':
-                # ▸ 두 키가 함께 있으면 minNotional(실제 최소 주문) 우선
-                val = f.get("minNotional")
-                if val is None:
-                    val = f.get("notional")           # fallback
-                if val is None:
-                    continue
-                val = float(val)
-                # 🔸 50 USDT 이상은 “위험한도”이므로 무시
-                if val < 50:
-                    min_notional = val if min_notional is None else min(min_notional, val)
+        exchange_info = client.futures_exchange_info()
+        step_size = min_notional = None
+        for s in exchange_info['symbols']:
+            if s['symbol'] == symbol.upper():
+                for f in s['filters']:
+                    if f['filterType'] == 'LOT_SIZE':
+                        step_size = float(f['stepSize'])
+                    elif f['filterType'] == 'MIN_NOTIONAL':
+                        min_notional = float(f['notional'])
         if step_size is None:
             print(f"[BINANCE] ❌ stepSize 조회 실패: {symbol}")
             return 0.0
@@ -771,63 +511,18 @@ def calculate_quantity(
             min_notional = 5.0     # 바이낸스 기본
         precision = abs(int(round(-1 * math.log10(step_size))))
 
-        # ───── 명목가(min_notional) + 최소 1-step 확보 ─────
-        steps = max(1, math.floor(raw_qty / step_size))
-        send_discord_debug(
-            f"[Q][DEBUG] {symbol} step={step_size} notional={notional:.4f} "
-            f"minNotional={min_notional}", "binance"
-        )
-        # ① minNotional 확보 (리스크 범위 내에서만)
+        # ───── 명목가(min_notional) 만족하도록 보정 ─────
+        steps = math.floor(raw_qty / step_size)
+        notional = steps * step_size * price
         if notional < min_notional:
-            max_affordable = usdt_balance * leverage      # 최대 가능 Notional
-
-            # ▸ minNotional 자체를 못 채우면 **주문 스킵**
-            if min_notional > max_affordable:
-                print(f"[Q][SKIP] {symbol} minNotional={min_notional} "
-                      f"> affordable={max_affordable:.2f}")
-                return 0.0
-
-            # ▸ 예산 내에서만 수량을 올려 minNotional 만족
-            steps = math.ceil(min_notional / (step_size * price))
-        # ▸ “무조건 stepSize 배수” 로 잘라낸 뒤 문자열-포맷
-        from decimal import Decimal, ROUND_DOWN
-        d_step = Decimal(str(step_size))
-        qty    = (Decimal(str(steps)) * d_step).quantize(d_step, ROUND_DOWN)
-        qty    = int(qty) if precision == 0 \
-                 else float(format(qty, f'.{precision}f'))
+            needed_steps = math.ceil(min_notional / (step_size * price))
+            steps = max(steps, needed_steps)
         
-        # ── 최종 수량·명목가 디버그 ───────────────────────────────────────
-        final_notional = qty * price
-        send_discord_debug(
-            f"[Q][FINAL] {symbol} qty={qty} notional={final_notional:.4f}", "binance")
+        qty = round(steps * step_size, precision)
 
-        # ───── stepSize(최소 주문 단위) 미만이면 바로 스킵 ─────
-        if qty < step_size:
-            print(f"[Q][SKIP] {symbol} qty<{step_size} (calc={qty})")
+        # 증거금 실제 가능 여부(5 % 여유)를 다시 체크
+        if qty * price > usdt_balance * leverage * 0.95:
             return 0.0
-
-        # ② Risk-Cap : 예산을 절대로 넘지 않도록 (여유 버퍼 제거)
-        max_notional = usdt_balance * leverage
-        if qty * price > max_notional:
-            steps_cap = math.floor(max_notional / (step_size * price))
-            if steps_cap == 0:                 # 캡이 5 USDT 미만이면 포기
-                return 0.0
-            qty = round(steps_cap * step_size, precision)
-
-            # 캡 안으로 낮췄더니 minNotional 을 깨면 → 최소 수량으로 재계산
-            if qty * price < min_notional:
-                steps_min = math.ceil(min_notional / (step_size * price))
-                if steps_min * step_size * price > max_notional:
-                    return 0.0                 # 양쪽 조건을 동시에 만족 못 함
-                qty = round(steps_min * step_size, precision)
-
-        if qty < step_size:           # stepSize 미만은 곧장 스킵
-            print(
-                f"[Q][SKIP] {symbol} qty=0 | "
-                f"cap={max_notional:.2f} minNotional={min_notional:.2f} "
-                f"step={step_size} price={price}"
-            )
-
         return qty
     except Exception as e:
         print(f"[BINANCE] ❌ 수량 계산 실패: {e}")
@@ -864,29 +559,10 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         if qty_full == 0:
             return False
 
-        # ── LOT_SIZE 기반 수량 라운딩 ───────────────────────────────
-        step = 1.0
-        ei   = ensure_futures_filters(symbol)
-        for f in ei.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                step = float(f["stepSize"])
-                break
-        prec = get_quantity_precision(symbol)
-
-        # 기본 정책 : 절반 익절(최소 1-step 보장)
-        from decimal import Decimal, ROUND_DOWN
-        d_step = Decimal(str(step))
-        qty_half = max(d_step, Decimal(str(qty_full)) / 2)
-        qty = (qty_half // d_step) * d_step
-        qty = float(qty.quantize(d_step, ROUND_DOWN))
-        # stepSize 미만이면 → 전량 TP
-        if qty < step:
-            qty = round(math.floor(qty_full / step) * step, prec)
-
-        # 0 이면 안전 탈출
-        if qty == 0:
-            print(f"[TP 갱신] {symbol} qty 계산 실패(step={step}, full={qty_full})")
-            return False
+        # 기본 정책 : 절반 익절
+        step  = float(get_tick_size(symbol) ** 0)  # = 1.0 (수량 반올림용)
+        prec  = get_quantity_precision(symbol)
+        qty   = round(max(step, qty_full / 2), prec)
 
         # ③ 기존 reduce-only LIMIT 주문 취소
         try:

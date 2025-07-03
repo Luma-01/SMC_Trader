@@ -1,14 +1,5 @@
 # main.py
 
-import builtins, traceback
-_orig_print = builtins.print
-def debug_print(*args, **kw):
-    if args and "[BINANCE] 심볼 누락" in str(args[0]):
-        traceback.print_stack(limit=5)   # 어디서 불렀는지 5단계만 표시
-    _orig_print(*args, **kw)
-builtins.print = debug_print
-
-
 import os
 import requests
 import sys
@@ -46,10 +37,7 @@ from core.iof import is_iof_entry
 from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
-# ── LTF MSS 컨펌 유틸
-from core.confirmation import confirm_ltf_reversal
-# ── 진입 방식(zone_and_mss | zone_or_mss)
-from config.settings import ENTRY_METHOD
+from core.confirmation import confirm_ltf_reversal   # ← 추가
 # 〃 무효-블록 유틸 가져오기
 from core.iof import is_invalidated, mark_invalidated
 # ────────────── 모드별 import ──────────────
@@ -58,9 +46,10 @@ from exchange.router import get_open_position     # (Gate·Binance 공용)
 if ENABLE_BINANCE:
     from exchange.binance_api import (
         place_order_with_tp_sl as binance_order_with_tp_sl,
-        get_available_balance,              # ← free-balance 전용
+        get_total_balance,
         get_tick_size, calculate_quantity,
         set_leverage, get_max_leverage,
+        get_available_balance,
         get_open_position as binance_pos,
     )
 # Gate.io 연동은 ENABLE_GATE 가 True 일 때만 임포트
@@ -137,6 +126,10 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     is_gate  = is_gate_sym(symbol)
     base_sym = to_binance(symbol) if not is_gate else symbol   # Binance REST용
 
+    # ⚠️ base_sym / is_gate 를 가장 먼저 계산해 둔다
+    is_gate  = "_USDT" in symbol
+    base_sym = symbol.replace("_", "") if is_gate else symbol
+
     # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
     # ① 내부 포지션 이미 보유
     if pm.has_position(symbol):
@@ -194,28 +187,21 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         ):
             return
 
-        # ─── tickSize 가져오기 ──────────────────────────────────
-        #    ▸ 바이낸스 delist 심볼 등은 PRICE_FILTER 가 없어서
-        #      get_tick_size() 가 ValueError 를 던지므로 여기서 잡고 스킵.
-        try:
-            tick_size = (
-                Decimal(str(get_tick_size_gate(symbol))) if is_gate
-                else Decimal(str(get_tick_size(base_sym)))
-            )
-        except Exception as e:
-            print(f"[SKIP] {symbol} – tickSize unavailable → {e}")
-            return
+        # Gate · Binance 모두 Decimal 로 통일 (precision 오류 방지!)
+        tick_size = (
+            Decimal(str(get_tick_size_gate(symbol))) if is_gate
+            else Decimal(str(get_tick_size(base_sym)))
+        )
 
         # ⬇️ htf 전체 DataFrame을 그대로 넘겨야 attrs 를 활용할 수 있음
         signal, direction, trg_zone = is_iof_entry(htf, ltf, tick_size)
         if not signal or direction is None:
             return
 
-        # ───── zone_and_mss 모드에서만 MSS 리젝션을 기다린다 ─────
-        if ENTRY_METHOD != "zone_or_mss":
-            if not confirm_ltf_reversal(ltf, direction):
-                print(f"[WAIT] {symbol} – 아직 LTF 리젝션 미확인. 진입 보류")
-                return
+        # ───── LTF(1m·5m) 반전이 확인될 때까지 대기 ─────
+        if not confirm_ltf_reversal(ltf, direction):
+            print(f"[WAIT] {symbol} – 아직 LTF 리젝션 미확인. 진입 보류")
+            return
 
         entry = float(ltf["close"].iloc[-1])
         # Zone 기반 SL/TP 계산 (OB 사용)
@@ -323,17 +309,6 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         sl, tp = float(sl_dec), float(tp_dec)
 
-        # ─── sanity-check : SL·TP 유효성 검사 ─────────────────────
-        if sl <= 0 or tp <= 0:
-            print(f"[SKIP] {symbol} – invalid SL/TP (sl={sl}, tp={tp})")
-            return
-        # 가격 순서 확인 (LONG: SL < entry < TP,  SHORT: TP < entry < SL)
-        if (direction == "long"  and (sl >= entry or tp <= entry)) or \
-           (direction == "short" and (tp >= entry or sl <= entry)):
-            print(f"[SKIP] {symbol} – SL/TP ordering error "
-                  f"(entry={entry}, sl={sl}, tp={tp})")
-            return
-
         # ───────── 디버그 출력 위치 ─────────
         print(f"[DEBUG][SL-CALC] {symbol} "
               f"trg={trg_zone} zone={zone} "
@@ -353,13 +328,13 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 qty, tp, sl, leverage
             )
         else:
-            # ⚠️  **리스크 예산**은 ‘지금 당장 쓸 수 있는’ 잔고 기준으로!
-            avail = get_available_balance()          # ✅ free balance
-            qty = calculate_quantity(symbol, entry, avail, leverage)
-
-            # 디버그 로그도 동일 기준으로 맞춰준다
-            print(f"[BINANCE] 사용가능잔고={avail:.2f}, "
-                  f"calc_qty={qty}, entry={entry:.4f}")
+            # ⚠️  진입 비중 = “총 잔고 10 %”
+            qty = calculate_quantity(
+                symbol,
+                entry,
+                get_total_balance(),         # ← 전체 시드 전달
+                leverage,
+            )
             if qty <= 0:
                 return
             order_ok = binance_order_with_tp_sl(
@@ -508,7 +483,7 @@ async def strategy_loop():
         await reconcile_internal_with_live()
         maybe_send_weekly_report(datetime.now(timezone.utc))
 
-        if datetime.now(timezone.utc).second % 30 == 0:   # 30초마다
+        if datetime.utcnow().second % 30 == 0:   # 30초마다
             print(f"[HB] {datetime.utcnow().isoformat()} loop alive")
 
 
@@ -548,11 +523,6 @@ async def reconcile_internal_with_live():
             print(f"[SYNC] 외부 포지션 가져오기 → {sym}")
             pm.init_position(sym, dir_, entry, sl, tp)
     """
-
-
-# main.py (전략 루프 시작 직전에)
-from config.settings import ENTRY_METHOD
-print(f"[DEBUG] ENTRY_METHOD = {ENTRY_METHOD}")   # ★ 한 줄만 추가
 
 async def main():
     initialize()
@@ -611,20 +581,6 @@ def force_entry(symbol, side, qty_override=None):
         else:                             # Binance 선물
             set_leverage(symbol, leverage)      # 미리 적용
             size = calculate_quantity(symbol, price, get_available_balance(), leverage)
-
-            # ─── 최소 주문 금액(minNotional) 강제 충족 ───
-            from exchange.binance_api import _get_min_notional, ensure_futures_filters
-            mn  = _get_min_notional(symbol, default=20)     # ETH 선물은 20 USDT
-            # LOT_SIZE(stepSize) 도 필요
-            step = 1.0
-            for f in ensure_futures_filters(symbol).get("filters", []):
-                if f["filterType"] == "LOT_SIZE":
-                    step = float(f["stepSize"])
-                    break
-            if size * price < mn:           # 부족하면 stepSize 단위로 끌어올림
-                import math
-                need_steps = math.ceil(mn / (price * step))
-                size       = round(need_steps * step, 8)   # 반올림 자릿수는 충분히 크게
 
     if size <= 0:
         print("❌ 최소 주문 수량 미달 – 강제 진입 취소")
