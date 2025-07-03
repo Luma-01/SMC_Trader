@@ -50,7 +50,6 @@ from core.ob import detect_ob
 from core.confirmation import confirm_ltf_reversal
 # ── 진입 방식(zone_and_mss | zone_or_mss)
 from config.settings import ENTRY_METHOD
-from config.settings import ENTRY_METHOD
 # 〃 무효-블록 유틸 가져오기
 from core.iof import is_invalidated, mark_invalidated
 # ────────────── 모드별 import ──────────────
@@ -137,10 +136,6 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     # 표준 키/거래소 구분
     is_gate  = is_gate_sym(symbol)
     base_sym = to_binance(symbol) if not is_gate else symbol   # Binance REST용
-
-    # ⚠️ base_sym / is_gate 를 가장 먼저 계산해 둔다
-    is_gate  = "_USDT" in symbol
-    base_sym = symbol.replace("_", "") if is_gate else symbol
 
     # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
     # ① 내부 포지션 이미 보유
