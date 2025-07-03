@@ -2,7 +2,7 @@
 
 import os
 import math
-import requests, functools, time
+import requests, functools, time, re
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, ROUND_CEILING
 from config.settings import TRADE_RISK_PCT
 from typing import Optional
@@ -30,6 +30,11 @@ ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 # ────────────────────────────────────────────────
 def _get_min_notional(symbol: str, default: float = 5.0) -> float:
     ei = ensure_futures_filters(symbol)
+    cache_key = symbol.upper()
+    if (cached := _MN_CACHE.get(cache_key)):
+        ts, val = cached
+        if time.time() - ts < 600:   # 10 분
+            return val
     mn: float | None = None
     for f in ei.get("filters", []):
         if f["filterType"] == "MIN_NOTIONAL":
@@ -37,14 +42,20 @@ def _get_min_notional(symbol: str, default: float = 5.0) -> float:
             if val is None:
                 continue
             val = float(val)
-            if val < 50:                           # 50 USDT 이상은 위험한도
-                mn = val if mn is None else min(mn, val)
-    return mn if mn is not None else default
+            if val < 50:                 # 50 USDT 이상 = 위험한도(무시)
+                # 👉 “여러 값” 중 **가장 큰 값**을 하한으로 채택
+                mn = val if mn is None else max(mn, val)
+    mn = mn if mn is not None else default
+    _MN_CACHE[cache_key] = (time.time(), mn)
+    return mn
 
 # ──────────────────────────────────────────────────────────
 #  🤖 exchangeInfo 헬퍼 (v2 우선 → v1 백업 → LRU 캐시)
 # ──────────────────────────────────────────────────────────
+# ─── exchangeInfo 스냅샷 캐시  ─────────────────────────────────────────────
 _EI_CACHE: dict[str, tuple[float, dict]] = {}   # {SYM(UPPER): (ts, data)}
+# ─── minNotional 전용 LRU 캐시  ───────────────────────────────────────────
+_MN_CACHE: dict[str, tuple[float, float]] = {}  # {SYM(UPPER): (ts, minN)}
 
 def _fetch_exchange_info(
     symbol: str | None = None,
@@ -299,7 +310,12 @@ def place_order_with_tp_sl(
         # ▸ 진입 전, “실제” minNotional → 계약수 강제 보정
         cur_price     = get_mark_price(symbol) or tp  # 실패 시 TP 가격 활용
         min_notional  = _get_min_notional(symbol)
-        if qty_try * cur_price < min_notional:
+        notional_try = qty_try * cur_price
+        # ── 최초 시도 디버그 ──────────────────────────────────────────────
+        send_discord_debug(
+            f"[ENTRY] {symbol} attempt=0 qty={qty_try} "
+            f"notional={notional_try:.4f} minN={min_notional}", "binance")
+        if notional_try < min_notional:
             need_steps = math.ceil(
                 Decimal(str(min_notional / cur_price)).quantize(
                     Decimal(str(step)), ROUND_CEILING
@@ -321,7 +337,12 @@ def place_order_with_tp_sl(
                     qty_try = math.floor(qty_try * 0.9 / step) * step
                     qty_try = round(qty_try, prec)
                 elif e.code == -4164 and attempt < 2:      # notional 부족 ↑
-                    # minNotional-가격 속성으로 **필요수량** 재산출
+                    # ① 에러 메시지에서 실제 하한 추출
+                    m = re.search(r"no smaller than (\d+(\.\d+)?)", str(e))
+                    if m:
+                        min_notional = float(m.group(1))
+                        _MN_CACHE[symbol.upper()] = (time.time(), min_notional)
+                    # ② 필요 수량 재산출
                     need_steps = math.ceil(
                         Decimal(str(min_notional / cur_price)).quantize(
                             Decimal(str(step)), ROUND_CEILING
@@ -331,6 +352,9 @@ def place_order_with_tp_sl(
                     qty_try = float(format(qty_try, f'.{prec}f'))
                     reason = "margin" if e.code == -2019 else "notional"
                     print(f"[RETRY] {reason} → 수량 {qty_try} 재시도({attempt+1}/3)")
+                    send_discord_debug(
+                        f"[ENTRY] {symbol} attempt={attempt+1} "
+                        f"qty={qty_try} minN={min_notional}", "binance")
                     continue
                 raise
 
@@ -704,7 +728,10 @@ def calculate_quantity(
 
         # ───── 명목가(min_notional) + 최소 1-step 확보 ─────
         steps = max(1, math.floor(raw_qty / step_size))
-        notional = steps * step_size * price
+        send_discord_debug(
+            f"[Q][DEBUG] {symbol} step={step_size} notional={notional:.4f} "
+            f"minNotional={min_notional}", "binance"
+        )
         # ① minNotional 확보 (리스크 범위 내에서만)
         if notional < min_notional:
             max_affordable = usdt_balance * leverage      # 최대 가능 Notional
@@ -722,6 +749,11 @@ def calculate_quantity(
         d_step = Decimal(str(step_size))
         qty    = (Decimal(str(steps)) * d_step).quantize(d_step, ROUND_DOWN)
         qty    = float(format(qty, f'.{precision}f'))
+        
+        # ── 최종 수량·명목가 디버그 ───────────────────────────────────────
+        final_notional = qty * price
+        send_discord_debug(
+            f"[Q][FINAL] {symbol} qty={qty} notional={final_notional:.4f}", "binance")
 
         # ───── stepSize(최소 주문 단위) 미만이면 바로 스킵 ─────
         if qty < step_size:
