@@ -290,7 +290,11 @@ def place_order_with_tp_sl(
                 break
 
         # ── **여기서도** 다시 한 번 stepSize 배수 보정 ──
-        qty_try = math.floor(quantity / step) * step
+        from decimal import Decimal, ROUND_DOWN
+        d_step   = Decimal(str(step))
+        qty_try  = (Decimal(str(quantity))
+                    .quantize(d_step, ROUND_DOWN))  # stepSize 배수로 절삭
+        qty_try  = float(qty_try)  
 
         # ▸ 진입 전, “실제” minNotional → 계약수 강제 보정
         cur_price     = get_mark_price(symbol) or tp  # 실패 시 TP 가격 활용
@@ -704,8 +708,10 @@ def calculate_quantity(
             # ▸ 예산 내에서만 수량을 올려 minNotional 만족
             steps = math.ceil(min_notional / (step_size * price))
         # ▸ “무조건 stepSize 배수” 로 잘라낸 뒤 문자열-포맷
-        qty = math.floor(steps * step_size / step_size) * step_size
-        qty = float(format(qty, f'.{precision}f'))
+        from decimal import Decimal, ROUND_DOWN
+        d_step = Decimal(str(step_size))
+        qty    = (Decimal(str(steps)) * d_step).quantize(d_step, ROUND_DOWN)
+        qty    = float(format(qty, f'.{precision}f'))
 
         # ───── stepSize(최소 주문 단위) 미만이면 바로 스킵 ─────
         if qty < step_size:
