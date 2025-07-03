@@ -3,7 +3,7 @@
 import os
 import math
 import requests, functools, time
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_UP, ROUND_CEILING
 from config.settings import TRADE_RISK_PCT
 from typing import Optional
 from dotenv import load_dotenv
@@ -23,6 +23,23 @@ client = Client(api_key, api_secret, tld='com')
 client.API_URL = "https://fapi.binance.com/fapi"
 ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
 ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
+
+# ────────────────────────────────────────────────
+#  ▸ 심볼별 “실제” MIN_NOTIONAL(보통 5·10·20) 헬퍼
+#     - 위험한도(100·1000…)는 제외
+# ────────────────────────────────────────────────
+def _get_min_notional(symbol: str, default: float = 5.0) -> float:
+    ei = ensure_futures_filters(symbol)
+    mn: float | None = None
+    for f in ei.get("filters", []):
+        if f["filterType"] == "MIN_NOTIONAL":
+            val = f.get("minNotional") or f.get("notional")
+            if val is None:
+                continue
+            val = float(val)
+            if val < 50:                           # 50 USDT 이상은 위험한도
+                mn = val if mn is None else min(mn, val)
+    return mn if mn is not None else default
 
 # ──────────────────────────────────────────────────────────
 #  🤖 exchangeInfo 헬퍼 (v2 우선 → v1 백업 → LRU 캐시)
@@ -267,6 +284,18 @@ def place_order_with_tp_sl(
 
         # ── **여기서도** 다시 한 번 stepSize 배수 보정 ──
         qty_try = math.floor(quantity / step) * step
+
+        # ▸ 진입 전, “실제” minNotional → 계약수 강제 보정
+        cur_price     = get_mark_price(symbol) or tp  # 실패 시 TP 가격 활용
+        min_notional  = _get_min_notional(symbol)
+        if qty_try * cur_price < min_notional:
+            need_steps = math.ceil(
+                Decimal(str(min_notional / cur_price)).quantize(
+                    Decimal(str(step)), ROUND_CEILING
+                ) / Decimal(str(step))
+            )
+            qty_try = float(need_steps * step)
+            qty_try = float(format(qty_try, f'.{prec}f'))
         qty_try = float(format(qty_try, f'.{prec}f'))
         for attempt in range(3):
             try:
@@ -277,10 +306,18 @@ def place_order_with_tp_sl(
                 )
             except BinanceAPIException as e:
                 # -2019 = 증거금 부족,  -4164 = notional 부족
-                if e.code in (-2019, -4164) and attempt < 2:
-                    factor   = 0.9 if e.code == -2019 else 1.1
-                    qty_try  = math.floor(qty_try * factor / step) * step
-                    qty_try  = round(qty_try, prec)
+                if e.code == -2019 and attempt < 2:        # 증거금 부족 ↓
+                    qty_try = math.floor(qty_try * 0.9 / step) * step
+                    qty_try = round(qty_try, prec)
+                elif e.code == -4164 and attempt < 2:      # notional 부족 ↑
+                    # minNotional-가격 속성으로 **필요수량** 재산출
+                    need_steps = math.ceil(
+                        Decimal(str(min_notional / cur_price)).quantize(
+                            Decimal(str(step)), ROUND_CEILING
+                        ) / Decimal(str(step))
+                    )
+                    qty_try = float(need_steps * step)
+                    qty_try = float(format(qty_try, f'.{prec}f'))
                     reason = "margin" if e.code == -2019 else "notional"
                     print(f"[RETRY] {reason} → 수량 {qty_try} 재시도({attempt+1}/3)")
                     continue
