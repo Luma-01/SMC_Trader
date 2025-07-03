@@ -199,11 +199,17 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         ):
             return
 
-        # Gate · Binance 모두 Decimal 로 통일 (precision 오류 방지!)
-        tick_size = (
-            Decimal(str(get_tick_size_gate(symbol))) if is_gate
-            else Decimal(str(get_tick_size(base_sym)))
-        )
+        # ─── tickSize 가져오기 ──────────────────────────────────
+        #    ▸ 바이낸스 delist 심볼 등은 PRICE_FILTER 가 없어서
+        #      get_tick_size() 가 ValueError 를 던지므로 여기서 잡고 스킵.
+        try:
+            tick_size = (
+                Decimal(str(get_tick_size_gate(symbol))) if is_gate
+                else Decimal(str(get_tick_size(base_sym)))
+            )
+        except Exception as e:
+            print(f"[SKIP] {symbol} – tickSize unavailable → {e}")
+            return
 
         # ⬇️ htf 전체 DataFrame을 그대로 넘겨야 attrs 를 활용할 수 있음
         signal, direction, trg_zone = is_iof_entry(htf, ltf, tick_size)
@@ -321,6 +327,17 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             tp_dec = (entry_dec - (sl_dec - entry_dec) * rr_dec).quantize(tick_size)
 
         sl, tp = float(sl_dec), float(tp_dec)
+
+        # ─── sanity-check : SL·TP 유효성 검사 ─────────────────────
+        if sl <= 0 or tp <= 0:
+            print(f"[SKIP] {symbol} – invalid SL/TP (sl={sl}, tp={tp})")
+            return
+        # 가격 순서 확인 (LONG: SL < entry < TP,  SHORT: TP < entry < SL)
+        if (direction == "long"  and (sl >= entry or tp <= entry)) or \
+           (direction == "short" and (tp >= entry or sl <= entry)):
+            print(f"[SKIP] {symbol} – SL/TP ordering error "
+                  f"(entry={entry}, sl={sl}, tp={tp})")
+            return
 
         # ───────── 디버그 출력 위치 ─────────
         print(f"[DEBUG][SL-CALC] {symbol} "
