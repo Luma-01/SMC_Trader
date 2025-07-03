@@ -508,7 +508,7 @@ async def strategy_loop():
         await reconcile_internal_with_live()
         maybe_send_weekly_report(datetime.now(timezone.utc))
 
-        if datetime.utcnow().second % 30 == 0:   # 30초마다
+        if datetime.now(timezone.utc).second % 30 == 0:   # 30초마다
             print(f"[HB] {datetime.utcnow().isoformat()} loop alive")
 
 

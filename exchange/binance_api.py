@@ -25,6 +25,25 @@ ORDER_TYPE_STOP_MARKET = 'STOP_MARKET'
 ORDER_TYPE_LIMIT       = 'LIMIT'   # ← 이미 import 됐지만 가독성용
 
 # ────────────────────────────────────────────────
+#  📌 stepSize 헬퍼
+#     ▸ MARKET_LOT_SIZE > LOT_SIZE 우선
+# ────────────────────────────────────────────────
+def _select_step_size(ei: dict) -> float:
+    """
+    Futures 심볼의 유효 stepSize 반환.
+      1) MARKET_LOT_SIZE가 있으면 그것
+      2) 아니면 LOT_SIZE
+      3) 둘 다 없으면 1.0
+    """
+    mkt = lot = None
+    for f in ei.get("filters", []):
+        if f["filterType"] == "MARKET_LOT_SIZE":
+            mkt = float(f["stepSize"])
+        elif f["filterType"] == "LOT_SIZE":
+            lot = float(f["stepSize"])
+    return mkt or lot or 1.0
+
+# ────────────────────────────────────────────────
 #  ▸ 심볼별 “실제” MIN_NOTIONAL(보통 5·10·20) 헬퍼
 #     - 위험한도(100·1000…)는 제외
 # ────────────────────────────────────────────────
@@ -273,6 +292,22 @@ def place_order_with_tp_sl(
     ③ 실제 체결 수량으로 TP/SL 주문을 생성
     """
     try:
+        # ──────────────────────────────────────────────
+        # 0. **입력값 방어막** ─ SL·TP 미정 or 음수일 때 자동 보정
+        #    · LONG  ➜ sl = price × 0.97 , tp = price × 1.03
+        #    · SHORT ➜ sl = price × 1.03 , tp = price × 0.97
+        # ──────────────────────────────────────────────
+        if tp <= 0 or sl <= 0:
+            _p = get_mark_price(symbol)
+            if _p == 0:                       # 시세 실패 → 포기
+                print(f"[SKIP] {symbol} – markPrice 0, cannot calc SL/TP")
+                return False
+            if side == "buy":
+                tp = round(_p * 1.03, 8)
+                sl = round(_p * 0.97, 8)
+            else:
+                tp = round(_p * 0.97, 8)
+                sl = round(_p * 1.03, 8)
         # ───────── 사전 필터 확인 ─────────
         ei = ensure_futures_filters(symbol)
         if not ei.get("filters"):
@@ -290,13 +325,8 @@ def place_order_with_tp_sl(
             base_kwargs["positionSide"] = position_side
 
         # ──────── 시장 진입 재시도 루프 ────────
-        # ← LOT_SIZE 정보 미리 확보
-        step   = 1.0  # 수량 라운딩 기본단위 (가격 tickSize 는 아래에서 별도 사용)
-        # 위에서 이미 가져온 ei 사용
-        for f in ei.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                step = float(f["stepSize"])
-                break
+        # ← **MARKET_LOT_SIZE > LOT_SIZE** 한 줄로 선택
+        step = _select_step_size(ei)
 
         prec = get_quantity_precision(symbol)   # ← NEW
 
@@ -332,16 +362,28 @@ def place_order_with_tp_sl(
                     **base_kwargs
                 )
             except BinanceAPIException as e:
-                # -2019 = 증거금 부족,  -4164 = notional 부족
+                # -2019 = 증거금 부족  
+                # -4164 = notional 부족  
+                # -1111 = precision 초과  ← NEW
                 if e.code == -2019 and attempt < 2:        # 증거금 부족 ↓
                     qty_try = math.floor(qty_try * 0.9 / step) * step
                     qty_try = round(qty_try, prec)
-                elif e.code == -4164 and attempt < 2:      # notional 부족 ↑
+                elif e.code in (-4164, -1111) and attempt < 2:
                     # ① 에러 메시지에서 실제 하한 추출
                     m = re.search(r"no smaller than (\d+(\.\d+)?)", str(e))
                     if m:
                         min_notional = float(m.group(1))
                         _MN_CACHE[symbol.upper()] = (time.time(), min_notional)
+                    # ② precision 초과면 → stepSize 에 맞춰 **버림** 재계산
+                    if e.code == -1111:
+                        qty_try = math.floor(qty_try / step) * step
+                        qty_try = int(qty_try) if prec == 0 \
+                                  else float(format(qty_try, f'.{prec}f'))
+                        print(f"[RETRY] precision → 수량 {qty_try} 재시도({attempt+1}/3)")
+                        send_discord_debug(
+                            f"[ENTRY] {symbol} attempt={attempt+1} "
+                            f"qty={qty_try} (precision fix)", "binance")
+                        continue
                     # ② 필요 수량 재산출
                     need_steps = math.ceil(
                         Decimal(str(min_notional / cur_price)).quantize(
@@ -350,8 +392,7 @@ def place_order_with_tp_sl(
                     )
                     qty_try = float(need_steps * step)
                     qty_try = float(format(qty_try, f'.{prec}f'))
-                    reason = "margin" if e.code == -2019 else "notional"
-                    print(f"[RETRY] {reason} → 수량 {qty_try} 재시도({attempt+1}/3)")
+                    print(f"[RETRY] notional → 수량 {qty_try} 재시도({attempt+1}/3)")
                     send_discord_debug(
                         f"[ENTRY] {symbol} attempt={attempt+1} "
                         f"qty={qty_try} minN={min_notional}", "binance")
@@ -388,10 +429,11 @@ def place_order_with_tp_sl(
             print(f"[SKIP] {ve}")
             return False
 
-        # ───── SL 음수(또는 0) 방어 ───────────────────────────────────
-        if float(sl) <= 0:
-            # 체결가의 50 % 를 임시 SL 로 사용 (시장가 대비 대략-최하단)
-            sl = float(entry_res["fills"][0]["price"]) * 0.5
+        # 슬리피지로 SL 이 체결가와 뒤집어지는 경우를 한 틱 보정
+        if side == "buy" and sl_dec >= last_price:
+            sl_dec = (last_price - tick).quantize(tick, ROUND_DOWN)
+        if side == "sell" and sl_dec <= last_price:
+            sl_dec = (last_price + tick).quantize(tick, ROUND_UP)
 
         # 기본 라운딩 ─────────────────────────────────────────────────
         if side == "buy":                                   # LONG
@@ -415,10 +457,14 @@ def place_order_with_tp_sl(
         tp_str = format(tp_dec, 'f')
         sl_str = format(sl_dec, 'f')
 
-        # ── sanity check : SL·TP 음수/0 차단 ───────────────────────
+        # ── sanity check ──────────────────────────────────────────
         if tp_dec <= 0 or sl_dec <= 0:
             print(f"[SKIP] invalid SL/TP for {symbol}: sl={sl_dec}, tp={tp_dec}")
             return False
+        # TP 와 SL 이 같으면 최소 한 틱 벌리기
+        if tp_dec == sl_dec:
+            tp_dec = (tp_dec + tick) if side == "buy" else (tp_dec - tick)
+            tp_str = format(tp_dec, 'f')
 
         # DEBUG
         print(f"[DEBUG] {symbol} tick={tick}, tp={tp_str}, sl={sl_str}")
@@ -657,12 +703,12 @@ def get_quantity_precision(symbol: str) -> int:
     try:
         ei = ensure_futures_filters(symbol)
 
-        # LOT_SIZE 찾기
+        # LOT_SIZE (일반) 과 MARKET_LOT_SIZE 중 **더 큰 stepSize** 채택
         step_size = None
         for f in ei.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                step_size = float(f["stepSize"])
-                break
+            if f["filterType"] in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+                val = float(f["stepSize"])
+                step_size = val if step_size is None else max(step_size, val)
         if step_size is None:          # 필터 없음 → 기본값
             return 3
 
@@ -704,11 +750,10 @@ def calculate_quantity(
 
         # stepSize / notional 최소값 가져오기
         ei = ensure_futures_filters(symbol)
-        step_size = min_notional = None
+        step_size = _select_step_size(ei)
+        min_notional = None
         for f in ei.get('filters', []):
-            if f['filterType'] == 'LOT_SIZE':
-                step_size = float(f['stepSize'])
-            elif f['filterType'] == 'MIN_NOTIONAL':
+            if f['filterType'] == 'MIN_NOTIONAL':
                 # ▸ 두 키가 함께 있으면 minNotional(실제 최소 주문) 우선
                 val = f.get("minNotional")
                 if val is None:
@@ -748,7 +793,8 @@ def calculate_quantity(
         from decimal import Decimal, ROUND_DOWN
         d_step = Decimal(str(step_size))
         qty    = (Decimal(str(steps)) * d_step).quantize(d_step, ROUND_DOWN)
-        qty    = float(format(qty, f'.{precision}f'))
+        qty    = int(qty) if precision == 0 \
+                 else float(format(qty, f'.{precision}f'))
         
         # ── 최종 수량·명목가 디버그 ───────────────────────────────────────
         final_notional = qty * price
