@@ -600,16 +600,8 @@ class PositionManager:
                     pos['sl_order_id'] = (
                         sl_result if isinstance(sl_result, int) else None
                     )
-                    # ── TP 동시 갱신 ───────────────────────────────
-                    # risk 는 부호와 관계없이 양수로 계산
-                    risk      = abs(pos['entry'] - new_sl)
-                    new_tp    = (pos['entry'] + risk * RR
-                                  if direction == "long"
-                                  else pos['entry'] - risk * RR)
-                    # TP 도 2 tick 이상 차이날 때만 재발행
-                    if abs(new_tp - old_tp) > tick * 2 and \
-                       update_take_profit(symbol, direction, new_tp) is not False:
-                        pos['tp'] = float(new_tp)
+                    # 📌 1차 익절 이후에는 TP 를 새로 만들지 않는다
+                    #     잔여 물량은 트레일링 SL 로만 관리
                     print(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} LONG SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
 
@@ -637,14 +629,7 @@ class PositionManager:
                     pos['sl_order_id'] = (
                         sl_result if isinstance(sl_result, int) else None
                     )
-                    # ── TP 동시 갱신 ───────────────────────────────
-                    risk      = abs(pos['entry'] - new_sl)
-                    new_tp    = (pos['entry'] + risk * RR
-                                  if direction == "long"
-                                 else pos['entry'] - risk * RR)
-                    if abs(new_tp - old_tp) > tick * 2 and \
-                       update_take_profit(symbol, direction, new_tp) is not False:
-                        pos['tp'] = float(new_tp)
+                    # 📌 1차 익절 이후에는 TP 를 새로 만들지 않는다
 
                     print(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}")
                     send_discord_debug(f"[TRAILING SL] {symbol} SHORT SL 갱신: {current_sl:.4f} → {new_sl:.4f}", "aggregated")
