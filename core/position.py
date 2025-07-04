@@ -24,6 +24,12 @@ from exchange.router import (
 )
 from core.data_feed import ensure_stream
 
+# ────── Tunable risk / SL 파라미터 (2025-07-04) ──────────────────
+TRAILING_THRESHOLD_PCT = 0.008   # 0.8 % – 트레일링 SL 민감도
+SAFETY_TICKS            = 1      # 내부 종료용 버퍼(틱) 2→1
+MIN_RR_BASE             = 0.005  # 0.5 % – 최소 엔트리-SL 거리
+# ----------------------------------------------------------------
+
 class PositionManager:
     def __init__(self):
         self.positions: Dict[str, Dict] = {}
@@ -157,8 +163,8 @@ class PositionManager:
 
         import math
 
-        #   min_rr = max(1.00 %,   tickSize * 3)
-        min_rr = max(0.01, (float(tick) / entry) * 3 if tick else 0)
+        # 최소 위험비 완화 (1 % → 0.5 %)
+        min_rr = max(MIN_RR_BASE, (float(tick) / entry) * 3 if tick else 0)
 
         if direction == "long":
             gap = (entry - sl) / entry
@@ -321,7 +327,7 @@ class PositionManager:
             needs_update = self.should_update_sl(symbol, protective)
 
             # ─── 추가: 보호선-엔트리 거리 최소 0.03 % 보장 ───────────
-            min_rr      = 0.01         # 1.00 %
+            min_rr      = MIN_RR_BASE   # 0.5 %
             risk_ratio  = abs(entry - protective) / entry
             if risk_ratio < min_rr:
                 print(f"[SL] 보호선 무시: 엔트리와 {risk_ratio:.4%} 격차(≥ {min_rr*100:.2f}% 필요) | {symbol}")
@@ -379,8 +385,7 @@ class PositionManager:
         except Exception:
             tick = 0     # 실패 시 0 ⇒ 기존 로직과 동일
 
-        SAFETY_TICKS = 2                 # 2 틱 이상 벗어나야 내부 종료
-
+        # 내부 종료(Stop-loss) 판정 – 틱 버퍼 1 tick
         if direction == 'long' and mark_price <= sl - tick * SAFETY_TICKS:
             print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
             send_discord_message(f"[STOP LOSS] {symbol} LONG @ {mark_price:.2f}", "aggregated")
@@ -484,7 +489,12 @@ class PositionManager:
             risk_new   = abs(entry - new_sl)
             return (new_sl < current_sl) or (risk_new < risk_now)
         
-    def try_update_trailing_sl(self, symbol: str, current_price: float, threshold_pct: float = 0.01):
+    def try_update_trailing_sl(
+        self,
+        symbol: str,
+        current_price: float,
+        threshold_pct: float = TRAILING_THRESHOLD_PCT,   # default 0.8 %
+    ):
         if symbol not in self.positions:
             return
 
@@ -513,7 +523,7 @@ class PositionManager:
         #   max(0.03 %,   tickSize / entry × 3)
         entry     = pos["entry"]
         tick_rr   = (float(tick) / entry) if (tick and entry) else 0
-        min_rr    = max(0.01, tick_rr * 3)
+        min_rr    = max(MIN_RR_BASE, tick_rr * 3)
 
         if direction == "long":
             new_sl = current_price * (1 - threshold_pct)
