@@ -24,7 +24,21 @@ ENTRY_METHOD = os.getenv("ENTRY_METHOD", "zone_and_mss").lower()
 #   •  .env  에  PROTECTIVE_MODE  지정 가능
 # ───────────────────────────────────────────────
 PROTECTIVE_MODE = os.getenv("PROTECTIVE_MODE", "ltf").lower()
-USE_HTF_PROTECTIVE = (PROTECTIVE_MODE == "mtf")   # "mtf" 때만 상위 TF 사용
+ALLOWED_PROTECTIVE = {"ltf", "mtf"}
+if PROTECTIVE_MODE not in ALLOWED_PROTECTIVE:
+    raise ValueError(
+        f"[CONFIG] PROTECTIVE_MODE='{PROTECTIVE_MODE}' 는 잘못된 값입니다. "
+        f"지원: {', '.join(sorted(ALLOWED_PROTECTIVE))}"
+    )
+
+# "mtf" 때만 상위 TF 사용
+USE_HTF_PROTECTIVE = (PROTECTIVE_MODE == "mtf")
+
+# ── 모드 요약을 콘솔·디스코드에 출력 ───────────────────────────
+mode_human = "LTF-only" if PROTECTIVE_MODE == "ltf" else "LTF+HTF"
+msg_cfg = f"🔧 [CONFIG] Protective mode = {mode_human}"
+print(msg_cfg)
+send_discord_debug(msg_cfg, "aggregated")
 
 # ───────────────────────────────────────────────
 #  거래소 모드 스위치
