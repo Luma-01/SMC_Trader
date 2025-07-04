@@ -253,11 +253,8 @@ class PositionManager:
                 # ── NEW ── ① 익절 직후 SL → 본절(Entry)
                 new_sl = entry                         # breakeven
                 # tickSize 라운드 & 진입가와 ≥1 tick 차이 확보
-                try:
-                    from exchange.router import get_tick_size as _tick
-                    tick = _tick(symbol) or 0
-                except Exception:
-                    tick = 0
+                from exchange.router import get_tick_size as _tick
+                tick = float(_tick(symbol) or 0)
                 if direction == "long":
                     new_sl = max(new_sl, sl + tick)    # 최소 1 tick ↑
                 else:  # short
@@ -282,11 +279,8 @@ class PositionManager:
 
                 # ── NEW ── ① 익절 직후 SL → 본절(Entry)
                 new_sl = entry
-                try:
-                    from exchange.router import get_tick_size as _tick
-                    tick = _tick(symbol) or 0
-                except Exception:
-                    tick = 0
+                from exchange.router import get_tick_size as _tick
+                tick = float(_tick(symbol) or 0)
                 if direction == "long":
                     new_sl = max(new_sl, sl + tick)
                 else:
@@ -560,11 +554,8 @@ class PositionManager:
         # (보호선이 있으면 둘 중 더 보수적인 가격만 채택)
 
         # ▸ tickSize 먼저 확보 -------------------------------------
-        try:
-            from exchange.router import get_tick_size as _tick
-            tick = _tick(symbol) or 0
-        except Exception:
-            tick = 0
+        from exchange.router import get_tick_size as _tick
+        tick = float(_tick(symbol) or 0)
 
         # ─── 최소 거리(리스크-가드) 확보 ────────────────────────────
         #   max(0.03 %,   tickSize / entry × 3)
@@ -632,7 +623,7 @@ class PositionManager:
                     risk      = abs(pos['entry'] - new_sl)
                     new_tp    = (pos['entry'] + risk * RR
                                   if direction == "long"
-                                  else pos['entry'] - risk * RR)
+                                 else pos['entry'] - risk * RR)
                     if abs(new_tp - old_tp) > tick * 2 and \
                        update_take_profit(symbol, direction, new_tp) is not False:
                         pos['tp'] = float(new_tp)
