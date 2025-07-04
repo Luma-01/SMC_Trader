@@ -233,12 +233,13 @@ def place_order_with_tp_sl(
         opposite_side = SIDE_SELL if side == "buy" else SIDE_BUY
         # ── TP 수량 산정 ────────────────────────────────
         half_qty_raw = filled_qty / 2
+        # ▸ 항상 **버림**(floor) → 50 % 이하만 TP 로 잡히도록
         half_qty     = math.floor(half_qty_raw / step) * step
         half_qty     = round(half_qty, prec)
 
-        # stepSize 보다 작으면 → 전량 TP
-        if half_qty == 0:
-            half_qty = round(math.floor(filled_qty / step) * step, prec)
+        # ▸ stepSize 미만이면 최소 1-step, 하지만 **전량은 아님**
+        if half_qty < step:
+            half_qty = step if filled_qty > step else filled_qty
 
         # ── 바이낸스 MIN_NOTIONAL 필터 재검증 ────────────
         min_notional_tp = None
