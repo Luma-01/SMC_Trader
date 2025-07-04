@@ -13,8 +13,6 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import pandas as pd
 from core.structure import detect_structure
-# Decimal 변환용 유틸
-from decimal import Decimal
 from notify.discord import send_discord_debug, send_discord_message
 # settings 에서 새로 만든 TF 상수도 같이 가져온다
 from config.settings import (
@@ -124,11 +122,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
     # 표준 키/거래소 구분
     is_gate  = is_gate_sym(symbol)
-    base_sym = to_binance(symbol) if not is_gate else symbol   # Binance REST용
-
-    # ⚠️ base_sym / is_gate 를 가장 먼저 계산해 둔다
-    is_gate  = "_USDT" in symbol
-    base_sym = symbol.replace("_", "") if is_gate else symbol
+    # Binance REST 는 ‘BTCUSDT’, Gate 는 원형 유지
+    base_sym = to_binance(symbol) if not is_gate else symbol
 
     # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
     # ① 내부 포지션 이미 보유
@@ -292,7 +287,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             sl_dec = sl_dec.quantize(tick_size)
 
         # ── 5) **리스크-가드** : 엔트리-SL 간격이 1 % 미만이면 강제 확대 ───
-        min_rr = Decimal("0.01")            # 0.03 %
+        min_rr = Decimal("0.01")            # 1 %
         risk_ratio = (abs(entry_dec - sl_dec) / entry_dec).quantize(Decimal("0.00000001"))
         if risk_ratio < min_rr:
             # `adj` 도 Decimal 로 맞추면 바로 `.quantize()` 가능
@@ -388,6 +383,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         #send_discord_debug(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
 
 def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
+    """fallback-용 단순 SL/TP 계산 (entry ± buffer %, RR 고정)"""
     if direction == 'long':
         sl = entry * (1 - buffer)
         tp = entry + (entry - sl) * rr
