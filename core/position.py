@@ -2,7 +2,7 @@
 
 import time
 from typing import Dict, Optional
-
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # ── pandas 타입 힌트/연산에 사용 ──────────────────────
 import pandas as pd
 
@@ -176,8 +176,18 @@ class PositionManager:
                 sl = entry * (1 + min_rr)
 
         # ─── ② TP를 SL 기준으로 재계산 --------------------
+        # ── tickSize 라운딩을 먼저 맞춘다 ──
+        from exchange.router import get_tick_size as _tick
+        tick = Decimal(str(_tick(symbol) or 0))
         risk = abs(entry - sl)
-        tp = entry + risk * RR if direction == "long" else entry - risk * RR
+        tp_f = entry + risk * RR if direction == "long" else entry - risk * RR
+
+        if tick:                              # tick 이 0 이면 그대로
+            if direction == "long":
+                tp_f = float(Decimal(str(tp_f)).quantize(tick, ROUND_UP))
+            else:
+                tp_f = float(Decimal(str(tp_f)).quantize(tick, ROUND_DOWN))
+        tp = tp_f
 
         ensure_stream(symbol)
         self.positions[symbol] = {
@@ -195,9 +205,11 @@ class PositionManager:
         on_entry(symbol, direction, entry, sl, tp)   # ★ 호출
 
         # 진입 시 SL 주문 생성
-        sl_result = update_stop_loss(symbol, direction, sl)
         # Binance ➜ order-id(int), Gate ➜ True  →  둘 다 “성공”으로 처리
-        if sl_result is not False:
+        sl_result = update_stop_loss(symbol, direction, sl)
+        if sl_result is True:       # 동일 SL → 주문 생략
+            print(f"[SL] {symbol} SL unchanged (=BE)")
+        if sl_result not in (False, True):
             self.positions[symbol]['sl_order_id'] = (
                 sl_result if isinstance(sl_result, int) else None
             )
