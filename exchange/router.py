@@ -182,3 +182,20 @@ def close_position_market(symbol: str):
     if not ok:
         raise RuntimeError("Binance market-close failed")
     return ok
+
+# ------------------------------------------------------------------
+# tickSize 통합 래퍼 (Binance / Gate 모두 지원)
+#   다른 모듈들은 이 함수만 import 하도록 통일합니다.
+# ------------------------------------------------------------------
+def get_tick_size(symbol: str):
+    """
+    Binance : BTCUSDT
+    Gate    : BTC_USDT  (또는 GATE_SET 안에 있는 심볼)
+    """
+    try:
+        if symbol in GATE_SET or symbol.endswith("_USDT"):
+            return float(gate_tick(symbol))
+        # Binance → '_' 없는 순수 심볼
+        return float(binance_tick(symbol.replace("_", "")))
+    except Exception:
+        return 0.0
