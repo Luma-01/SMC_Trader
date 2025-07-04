@@ -114,8 +114,9 @@ def set_pm(manager):
 
 
 # ----------------------------------------------- REST / WS End-points
-BINANCE_REST_URL = "https://api.binance.com"
-BINANCE_WS_URL   = "wss://stream.binance.com:9443/stream?streams="
+# ▶ USDT-M Futures (FAPI) 엔드포인트로 교체
+BINANCE_REST_URL = "https://fapi.binance.com"
+BINANCE_WS_URL   = "wss://fstream.binance.com/stream?streams="
 # Gate Futures v4 USDT-settled WS
 GATE_WS_URL      = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 
@@ -350,11 +351,12 @@ async def stream_live_candles_binance():
                                 pd.DataFrame(candles[symbol][HTF])
                                 if candles[symbol][HTF] else None
                             )
+                            # 오타 수정: htf_df
                             pm.update_price(
                                 symbol,
                                 candle["close"],
                                 ltf_df = ltf_df,
-                                htf5_df = htf_df,      # ← 새 인자명
+                                htf_df = htf_df,
                             )
                     #send_discord_debug(f"[WS] {symbol}-{tf} 캔들 업데이트됨", "binance")                 
 
