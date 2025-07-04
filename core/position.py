@@ -274,7 +274,10 @@ class PositionManager:
 
                 if self.should_update_sl(symbol, new_sl):
                     sl_res = update_stop_loss(symbol, direction, new_sl)
-                    if sl_res is not False:
+                    # sl_res 가 'True' 이면 → SL 가격 변경 없음(no-op)
+                    if isinstance(sl_res, bool) and sl_res is True:
+                        print(f"[SL] {symbol} SL unchanged(=BE) – keep existing order")
+                    elif sl_res is not False:
                         old_id = pos.get("sl_order_id")
                         pos["sl"] = new_sl
                         pos["sl_order_id"] = sl_res if isinstance(sl_res, int) else None
@@ -300,7 +303,10 @@ class PositionManager:
 
                 if self.should_update_sl(symbol, new_sl):
                     sl_res = update_stop_loss(symbol, direction, new_sl)
-                    if sl_res is not False:
+                    # sl_res 가 'True' 이면 → SL 가격 변경 없음(no-op)
+                    if isinstance(sl_res, bool) and sl_res is True:
+                        print(f"[SL] {symbol} SL unchanged(=BE) – keep existing order")
+                    elif sl_res is not False:
                         old_id = pos.get("sl_order_id")
                         pos["sl"] = new_sl
                         pos["sl_order_id"] = sl_res if isinstance(sl_res, int) else None
