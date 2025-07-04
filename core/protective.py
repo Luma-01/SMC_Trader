@@ -15,10 +15,11 @@ def _is_swing_high(series, idx: int, span: int) -> bool:
     return high == max(series[idx - span: idx + span + 1])
 
 
+# span 기본값 3 → **2**  ⇒ 좌우 2개만 넘으면 스윙으로 인정 (완화)
 def get_protective_level(df: pd.DataFrame,
                          direction: str,
                          lookback: int = 30,
-                         span: int = 3) -> Optional[Dict]:
+                         span: int = 2) -> Optional[Dict]:
     """
     최근 LTF 스윙 로우(롱) / 스윙 하이(숏) 를 보호선으로 반환
     • lookback 구간 안에서 가장 마지막 스윙 포인트를 사용
@@ -47,5 +48,5 @@ def get_protective_level(df: pd.DataFrame,
 def get_ltf_protective(df: pd.DataFrame,
                        direction: str,
                        lookback: int = 30,
-                       span: int = 3) -> Optional[Dict]:
+                       span: int = 2) -> Optional[Dict]:
     return get_protective_level(df, direction, lookback, span)
