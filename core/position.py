@@ -250,12 +250,59 @@ class PositionManager:
                 send_discord_debug(f"[DEBUG] {symbol} LONG 1차 익절 완료", "aggregated")
                 pos["half_exit"] = True
 
+                # ── NEW ── ① 익절 직후 SL → 본절(Entry)
+                new_sl = entry                         # breakeven
+                # tickSize 라운드 & 진입가와 ≥1 tick 차이 확보
+                try:
+                    from exchange.router import get_tick_size as _tick
+                    tick = _tick(symbol) or 0
+                except Exception:
+                    tick = 0
+                if direction == "long":
+                    new_sl = max(new_sl, sl + tick)    # 최소 1 tick ↑
+                else:  # short
+                    new_sl = min(new_sl, sl - tick)    # 최소 1 tick ↓
+
+                if self.should_update_sl(symbol, new_sl):
+                    sl_res = update_stop_loss(symbol, direction, new_sl)
+                    if sl_res is not False:
+                        old_id = pos.get("sl_order_id")
+                        pos["sl"] = new_sl
+                        pos["sl_order_id"] = sl_res if isinstance(sl_res, int) else None
+                        if old_id:
+                            cancel_order(symbol, old_id)
+                        print(f"[SL->BE] {symbol} SL 본절로 이동 완료 @ {new_sl:.4f}")
+                        send_discord_debug(f"[SL] {symbol} 본절로 이동 → {new_sl:.4f}", "aggregated")
+            
             elif direction == "short" and current_price <= pos["tp"]:
                 print(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}")
                 send_discord_message(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}", "aggregated")
                 send_discord_debug(f"[DEBUG] {symbol} SHORT 1차 익절 완료", "aggregated")
                 pos["half_exit"] = True
 
+                # ── NEW ── ① 익절 직후 SL → 본절(Entry)
+                new_sl = entry
+                try:
+                    from exchange.router import get_tick_size as _tick
+                    tick = _tick(symbol) or 0
+                except Exception:
+                    tick = 0
+                if direction == "long":
+                    new_sl = max(new_sl, sl + tick)
+                else:
+                    new_sl = min(new_sl, sl - tick)
+
+                if self.should_update_sl(symbol, new_sl):
+                    sl_res = update_stop_loss(symbol, direction, new_sl)
+                    if sl_res is not False:
+                        old_id = pos.get("sl_order_id")
+                        pos["sl"] = new_sl
+                        pos["sl_order_id"] = sl_res if isinstance(sl_res, int) else None
+                        if old_id:
+                            cancel_order(symbol, old_id)
+                        print(f"[SL->BE] {symbol} SL 본절로 이동 완료 @ {new_sl:.4f}")
+                        send_discord_debug(f"[SL] {symbol} 본절로 이동 → {new_sl:.4f}", "aggregated")
+        
         # ───────────────────────────────────────────────
         # ❷ SL/TP 는 **절반 익절 후에도** 계속 추적
         self.try_update_trailing_sl(symbol, current_price)
