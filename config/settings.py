@@ -122,7 +122,11 @@ def fetch_symbol_info(
     symbols,
     required: int = TOP_SYMBOL_LIMIT
 ):
-    info = requests.get("https://api.binance.com/api/v3/exchangeInfo").json()
+    # ✔︎ USDT-M 선물 심볼까지 포함되는 futures exchangeInfo 사용
+    #    (v1: 필터 포함, v2: 필터 제외) → v1 로 충분합니다.
+    info = requests.get(
+        "https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=3
+    ).json()
     all_symbols = {s['symbol']: s for s in info['symbols']}
     max_leverages = fetch_max_leverages()
     result = {}
