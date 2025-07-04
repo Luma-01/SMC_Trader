@@ -152,8 +152,8 @@ candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
 def load_historical_candles_binance(
     symbol: str, interval: str, limit: int = CANDLE_LIMIT
 ):
-    # Binance REST 는 'BTCUSDT' 형태만 허용
-    url = f"{BINANCE_REST_URL}/api/v3/klines"
+    # Futures-USDT-M REST ( /fapi/v1/klines )
+    url = f"{BINANCE_REST_URL}/fapi/v1/klines"
     params = {
         "symbol": to_binance(symbol),        # canonical → Binance
         "interval": interval,
