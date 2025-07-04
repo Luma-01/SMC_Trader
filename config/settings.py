@@ -57,7 +57,8 @@ LTF_TF = os.getenv("LTF_TF", "5m").lower()   # Low-Time-Frame
 #  ↳ 필요 시 ‘추가’ 프레임을 세트에 넣어주면 된다.
 TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 
-RR = 2.0
+# ▶ Risk-Reward 1 : 1.5  (2025-07-04 조정)
+RR = 1.5
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
 DEFAULT_LEVERAGE = 30
