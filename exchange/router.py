@@ -4,9 +4,8 @@
 from exchange.binance_api import (
     update_stop_loss_order as binance_sl,
     update_take_profit_order as binance_tp,      # ★ NEW
-    get_open_position     as binance_pos,
-    get_tick_size         as binance_tick,
-    place_order           as binance_place,
+    get_open_position       as binance_pos,
+    place_order             as binance_place,
 )
 # ───────── Gate ───────────
 from exchange.gate_sdk import (
@@ -14,10 +13,29 @@ from exchange.gate_sdk import (
     update_stop_loss_order    as gate_sl,
     update_take_profit_order  as gate_tp,        # ★ NEW
     normalize_contract_symbol as to_gate,
-    get_tick_size             as gate_tick,
     place_order               as gate_place,
 )
+# ── 표준 라이브러리 ─────────────────────────────
 from decimal import Decimal
+
+# ------------------------------------------------------------------
+#  tickSize  통합 랩퍼  (Binance / Gate 공용)  ―  lazy-import 로 순환 차단
+# ------------------------------------------------------------------
+def get_tick_size(symbol: str) -> float:
+    """
+    Binance :  BTCUSDT
+    Gate    :  BTC_USDT
+    """
+    try:
+        if symbol.endswith("_USDT"):
+            # Gate 심볼 → gate_sdk 만 **지연 import**
+            from exchange.gate_sdk import get_tick_size as _gate_tick
+            return float(_gate_tick(symbol))
+        # Binance
+        from exchange.binance_api import get_tick_size as _bin_tick
+        return float(_bin_tick(symbol.replace("_", "")))
+    except Exception:
+        return 0.0
 # Discord 로깅 (SL/TP·포지션 오류 알림용)  ★ NEW
 from notify.discord import send_discord_debug
 # Gate 심볼 집합(BTC_USDT 형식) 생성 (미지원 심볼 스킵)
@@ -62,9 +80,7 @@ def update_stop_loss(symbol: str, direction: str, stop_price: float):
             print(f"[router] SL 가격 조회 실패({sym}) → {e}")
         return None
 
-    tick = gate_tick(symbol) if symbol in GATE_SET else \
-           binance_tick(symbol.replace("_", ""))
-
+    tick = get_tick_size(symbol)
     cur_sl = _current_sl_price(symbol)
     if cur_sl is not None and abs(cur_sl - stop_price) < float(tick):
         # ±1 tick 이내면 동일 주문으로 간주 → no-op
@@ -86,8 +102,7 @@ def update_take_profit(symbol: str, direction: str, take_price: float):
     print(f"[router] TP 갱신 요청: {symbol} → {take_price}")
     try:
         # ① tickSize 라운드(거래소별 함수에서도 재확인하지만 1차 보정) ★
-        tick = gate_tick(symbol) if symbol in GATE_SET else \
-               binance_tick(symbol.replace("_", ""))
+        tick = get_tick_size(symbol)
         take_price = float(Decimal(str(take_price)).quantize(Decimal(str(tick))))
 
         # ② 거래소별 TP 갱신 함수 호출
@@ -182,20 +197,4 @@ def close_position_market(symbol: str):
     if not ok:
         raise RuntimeError("Binance market-close failed")
     return ok
-
-# ------------------------------------------------------------------
-# tickSize 통합 래퍼 (Binance / Gate 모두 지원)
-#   다른 모듈들은 이 함수만 import 하도록 통일합니다.
-# ------------------------------------------------------------------
-def get_tick_size(symbol: str):
-    """
-    Binance : BTCUSDT
-    Gate    : BTC_USDT  (또는 GATE_SET 안에 있는 심볼)
-    """
-    try:
-        if symbol in GATE_SET or symbol.endswith("_USDT"):
-            return float(gate_tick(symbol))
-        # Binance → '_' 없는 순수 심볼
-        return float(binance_tick(symbol.replace("_", "")))
-    except Exception:
-        return 0.0
+    
