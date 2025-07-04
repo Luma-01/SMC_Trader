@@ -157,7 +157,7 @@ class PositionManager:
         # ─── ② 최소 리스크(거리) 강제 ──────────────────
         try:
             from exchange.router import get_tick_size as _tick
-            tick = _tick(symbol) or 0
+            tick = float(_tick(symbol) or 0)
         except Exception:
             tick = 0
 
@@ -422,9 +422,9 @@ class PositionManager:
         # → 틱사이즈 확보 (Gate, Binance 모두 대응)
         try:
             from exchange.router import get_tick_size as _tick
-            tick = _tick(symbol)
+            tick = float(_tick(symbol) or 0)
         except Exception:
-            tick = 0     # 실패 시 0 ⇒ 기존 로직과 동일
+            tick = 0.0   # 실패 시 0 ⇒ 기존 로직과 동일
 
         # 내부 종료(Stop-loss) 판정 – 틱 버퍼 1 tick
         if direction == 'long' and mark_price <= sl - tick * SAFETY_TICKS:
@@ -560,7 +560,7 @@ class PositionManager:
         # ─── 최소 거리(리스크-가드) 확보 ────────────────────────────
         #   max(0.03 %,   tickSize / entry × 3)
         entry     = pos["entry"]
-        tick_rr   = (float(tick) / entry) if (tick and entry) else 0
+        tick_rr   = (tick / entry) if (tick and entry) else 0
         min_rr    = max(MIN_RR_BASE, tick_rr * 3)
 
         if direction == "long":
