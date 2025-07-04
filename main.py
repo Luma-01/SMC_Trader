@@ -482,9 +482,10 @@ async def strategy_loop():
         # ─── 수동(외부) 청산 ↔ 내부 포지션 동기화 ───
         await reconcile_internal_with_live()
         maybe_send_weekly_report(datetime.now(timezone.utc))
-
-        if datetime.utcnow().second % 30 == 0:   # 30초마다
-            print(f"[HB] {datetime.utcnow().isoformat()} loop alive")
+        
+        now_utc = datetime.now(timezone.utc)
+        if now_utc.second % 30 == 0:             # 30초마다
+            print(f"[HB] {now_utc.isoformat()} loop alive")
 
 
 # 내부(pm) ↔ 거래소 포지션 자동 동기화
