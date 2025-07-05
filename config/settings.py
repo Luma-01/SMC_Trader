@@ -75,7 +75,7 @@ TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 RR = 1.1
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 150
-DEFAULT_LEVERAGE = 20
+DEFAULT_LEVERAGE = 10
 CUSTOM_LEVERAGES = {}
 
 # ─────────────────────────────────────────────
@@ -123,7 +123,7 @@ def fetch_top_futures_symbols(
     ▸ 24h 거래량 상위 심볼을 (limit + overshoot) 만큼 가져온다.
       - exchangeInfo 에서 빠지는 심볼을 제외하고도 최종 10개를 확보하기 위함.
     """
-    EXCLUDE_SYMBOLS = {"BTCUSDT"}  # ⛔ 제외할 심볼
+    EXCLUDE_SYMBOLS = {}  # ⛔ 제외할 심볼
     try:
         ticker = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr").json()
         sorted_by_volume = sorted(ticker, key=lambda x: float(x['quoteVolume']), reverse=True)

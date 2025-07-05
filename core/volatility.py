@@ -1,31 +1,30 @@
 # core/volatility.py
-
 import pandas as pd
 from typing import Optional
-from config.settings import ATR_PERIOD
-try:
-    import talib
-    _ta = True
-except ImportError:
-    _ta = False
+from config.settings import ATR_PERIOD  # 예: 14
 
 def atr_pct(df: pd.DataFrame) -> Optional[float]:
     """
-    df :  columns = high, low, close   (HTF 1h DataFrame)
-    return : ATR / close ×100  (%)
+    HTF DataFrame → ATR(%) 를 계산해서 반환
+    ------------------------------------------------
+    * 기대 컬럼: high, low, close
+    * 반환값  : (ATR / 최근 종가) × 100    ─ 소수점 %
+               데이터가 부족하면 None
     """
     if df is None or len(df) < ATR_PERIOD + 2:
         return None
 
-    if _ta:   # talib 사용 가능
-        atr = talib.ATR(df['high'], df['low'], df['close'],
-                        timeperiod=ATR_PERIOD).iloc[-1]
-    else:     # 순수 pandas (EMA-type Wilder)
-        tr = pd.concat([
-            (df['high'] - df['low']),
-            (df['high'] - df['close'].shift()).abs(),
-            (df['low']  - df['close'].shift()).abs()
-        ], axis=1).max(axis=1)
-        atr = tr.ewm(alpha=1/ATR_PERIOD, min_periods=ATR_PERIOD).mean().iloc[-1]
+    # ───────── True Range 계산 ─────────
+    tr = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift()).abs(),
+            (df["low"]  - df["close"].shift()).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
 
-    return float(atr / df['close'].iloc[-1] * 100)
+    # Wilder-style EMA(α = 1 / n)  → TA-Lib ATR 과 동일
+    atr = tr.ewm(alpha=1 / ATR_PERIOD, min_periods=ATR_PERIOD).mean().iloc[-1]
+
+    return float(atr / df["close"].iloc[-1] * 100)
