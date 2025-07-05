@@ -155,6 +155,28 @@ def get_open_position(symbol: str, *args, **kwargs):
         send_discord_debug(msg, "aggregated")
         return None
 
+def _binance_close_all(symbol: str, side: str) -> bool:
+    """
+    hedge 계정에서도 동작하도록 positionSide 추가
+    side : "BUY"  →  positionSide="SHORT"
+           "SELL" →  positionSide="LONG"
+    """
+    from exchange.binance_api import client
+    position_side = "SHORT" if side == "BUY" else "LONG"    # ★ 추가
+    try:
+        client.futures_create_order(
+            symbol=symbol,
+            side=side,
+            type="MARKET",
+            positionSide=position_side,    # ★ 추가
+            closePosition=True             # 전량 청산
+        )
+        return True
+    except Exception as e:
+        print(f"[router] closePosition=True 실패 → {repr(e)}")
+        return False
+
+
 def close_position_market(symbol: str):
     """
     현재 열려있는 포지션을 **시장가·reduce-only** 로 전량 청산  
@@ -171,14 +193,11 @@ def close_position_market(symbol: str):
         size, positionAmt, qty … 여러 후보 키를 순회하며
         첫 번째로 “숫자 변환 가능” 한 값을 반환
         """
-        for k in ("size", "positionAmt", "qty", "amount"):
-            v = p.get(k)
-            if v not in (None, '', 0):
-                try:
-                    return abs(float(v))
-                except (TypeError, ValueError):
-                    continue
-        return 0.0
+        # Binance · Gate 모두 positionAmt / size 만 있으면 됨
+        try:
+            return abs(float(p.get("positionAmt") or p.get("size") or 0))
+        except (TypeError, ValueError):
+            return 0.0
 
     size = _pos_size(pos)
     if size == 0:
@@ -191,7 +210,9 @@ def close_position_market(symbol: str):
         amt = float(pos.get("positionAmt", 0))
         direction = "long" if amt > 0 else "short"
 
-    side = "sell" if direction == "long" else "buy"
+    side = "SELL" if direction == "long" else "BUY"
+    if _binance_close_all(symbol.replace("_", ""), side.upper()):
+        return True
 
     # ── 3) 거래소별 주문 라우팅 ────────────────────
     if "_USDT" in symbol:      # Gate
@@ -200,10 +221,15 @@ def close_position_market(symbol: str):
         if not ok:
             raise RuntimeError("Gate market-close failed")
         return ok
-    # Binance
+    
+    # ───────── Binance ─────────
+    # ① closePosition=True (한 번만 시도)
+    if _binance_close_all(symbol.replace("_", ""), side):
+        return True
+
+    # ② fallback : 기존 MARKET + size 방식
     ok = binance_place(symbol, side, size,
                        order_type="MARKET", reduceOnly=True)
     if not ok:
         raise RuntimeError("Binance market-close failed")
     return ok
-    

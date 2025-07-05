@@ -1,7 +1,9 @@
 # core/position.py
 
+import traceback
 import time
 from typing import Dict, Optional
+from datetime import datetime, timezone, timedelta          # 🆕
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # ── pandas 타입 힌트/연산에 사용 ──────────────────────
 import pandas as pd
@@ -33,6 +35,8 @@ MIN_RR_BASE             = 0.005  # 0.5 % – 최소 엔트리-SL 거리
 class PositionManager:
     def __init__(self):
         self.positions: Dict[str, Dict] = {}
+        # 🆕 최근 “Flip” 시각 {sym: datetime}
+        self._last_flip: Dict[str, datetime] = {}
         # ▸ 마지막 종료 시각 저장  {symbol: epoch sec}
         self._cooldowns: Dict[str, float] = {}
 
@@ -106,6 +110,17 @@ class PositionManager:
     # 현재 내부에서 '열려-있다'고 간주되는 심볼 리스트
     def active_symbols(self) -> list[str]:
         return list(self.positions.keys())
+
+    # ───────── Flip(포지션 전환) 헬퍼 ─────────
+    def can_flip(self, sym: str) -> bool:             # 🆕
+        t = self._last_flip.get(sym)
+        if t is None:
+            return True
+        from config.settings import ATR_COOLDOWN_HR
+        return datetime.now(timezone.utc) - t >= timedelta(hours=ATR_COOLDOWN_HR)
+
+    def register_flip(self, sym: str):                # 🆕
+        self._last_flip[sym] = datetime.now(timezone.utc)
     
     # 외부(거래소)에서 이미 청산됐음을 감지했을 때 메모리에서 제거
     def force_exit(self, symbol: str, exit_price: float | None = None):
@@ -323,20 +338,35 @@ class PositionManager:
         #  📌 보호선(MSS) 로직은 **1차 익절(half_exit) 이후부터** 활성
         #      초기 SL 을 그대로 두고, 익절 뒤에만 ‘더 보수적’ SL 로 교체
         # ──────────────────────────────────────────────────────────────
+        # ── ① 보호선 쿨다운 검사 ────────────────────
+        if half_exit and pos.get("_mss_skip_until", 0) > time.time():
+            return  # 아직 쿨다운 → 보호선 계산 스킵
+
         candidates = []
-        if half_exit:                                  # ← 핵심 변경
+        if half_exit:
             # ───────── LTF(1 m) 보호선 후보 ─────────
             if ltf_df is not None:
                 p = get_ltf_protective(ltf_df, direction)
                 if p:
-                    candidates.append(p["protective_level"])
+                    lvl = p["protective_level"]
+                    # 롱이면 protective > entry, 숏이면 protective < entry
+                    if (
+                        (direction == "long"  and lvl > entry) or
+                        (direction == "short" and lvl < entry)
+                    ):
+                        candidates.append(lvl)
 
             # ───────── HTF(5 m) 보호선 – 옵션 ────────
             if USE_HTF_PROTECTIVE and htf_df is not None:
                 # HTF_TF 를 사용하는 보호선 (lookback 파라미터는 필요에 따라 조정)
                 p = get_protective_level(htf_df, direction, lookback=12, span=2)
                 if p:
-                    candidates.append(p["protective_level"])
+                    lvl = p["protective_level"]
+                    if (
+                        (direction == "long"  and lvl > entry) or
+                        (direction == "short" and lvl < entry)
+                    ):
+                        candidates.append(lvl)
 
         # half_exit 이전에는 candidates == [] → 아래 MSS 블록 스킵
         if candidates:
@@ -365,11 +395,11 @@ class PositionManager:
             if invalid_protective:
                 print(f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
                     f"(entry={entry:.4f}, protective={protective:.4f})")
-                send_discord_debug(
-                    f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
-                    f"(entry={entry:.4f}, protective={protective:.4f})",
-                    "aggregated",
-                )
+                #send_discord_debug(
+                #    f"[MSS] 보호선 무시: 방향 불일치 | {symbol} "
+                #    f"(entry={entry:.4f}, protective={protective:.4f})",
+                #    "aggregated",
+                #)
                 # ▸ ❶ 60 초 쿨다운 해시 저장
                 pos["_mss_skip_until"] = time.time() + 60
                 # ▸ ❷ 보호선·MSS 플래그 초기화
@@ -490,12 +520,14 @@ class PositionManager:
         
         # ① 시장가 포지션 청산 시도
         try:
-            close_position_market(symbol)           # 실패 시 RuntimeError
-
-            # ② 청산 후 포지션이 0 인지 재확인
-            from exchange.router import get_open_position
-            still_live = get_open_position(symbol)
-            if still_live and abs(still_live.get("entry", 0)) > 0:
+            close_position_market(symbol)
+            # ② 최대 3초(6×0.5s) 동안 fill 대기
+            for _ in range(20):
+                still_live = get_open_position(symbol)
+                if not still_live or abs(still_live.get("entry", 0)) == 0:
+                    break
+                time.sleep(0.5)
+            else:       # loop → break 없이 종료
                 raise RuntimeError("position not closed")
 
             print(f"[EXIT] {symbol} 시장가 청산 완료")
@@ -508,8 +540,12 @@ class PositionManager:
 
         except Exception as e:
             # 실패 시 SL 그대로 둬야 하므로 취소하지 않는다
-            print(f"[WARN] {symbol} 시장가 청산 실패 → {e}")
-            send_discord_debug(f"[WARN] {symbol} 시장가 청산 실패 → {e}", "aggregated")
+            print(f"[WARN] {symbol} 시장가 청산 실패 → {repr(e)}")   # repr() 으로 상세 문자열
+            # Binance 는 ClientError 인 경우 payload 가 e.__dict__['error'] 에 들어있습니다
+            if hasattr(e, 'error_code'):
+                print("code:", e.error_code, "msg:", e.error_message)
+            traceback.print_exc()                                   # ★ 스택트레이스 전체 출력
+            send_discord_debug(f"[WARN] {symbol} 시장가 청산 실패 → {repr(e)}", "aggregated")
             return   # 헷지 유지 후 재시도 기회
 
         if exit_price is None:

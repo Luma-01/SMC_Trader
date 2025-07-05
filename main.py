@@ -14,6 +14,8 @@ if sys.platform.startswith("win"):
 import pandas as pd
 from core.structure import detect_structure
 from notify.discord import send_discord_debug, send_discord_message
+# ── Volatility  (ATR)  ------------------------------ 🆕
+from core.volatility import atr_pct
 # settings 에서 새로 만든 TF 상수도 같이 가져온다
 from config.settings import (
     SYMBOLS,
@@ -26,6 +28,7 @@ from config.settings import (
     ENABLE_BINANCE,
     HTF_TF,
     LTF_TF,
+    ATR_LOW_TH_PCT, ATR_HIGH_TH_PCT
 )
 from core.data_feed import (
     candles, initialize_historical, start_data_feed,
@@ -125,9 +128,26 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
     # Binance REST 는 ‘BTCUSDT’, Gate 는 원형 유지
     base_sym = to_binance(symbol) if not is_gate else symbol
 
-    # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
-    # ① 내부 포지션 이미 보유
-    if pm.has_position(symbol):
+    # ───────── ① HTF ATR 상태 판단  ─────────── 🆕
+    df_htf_raw = candles.get(symbol, {}).get(htf_tf)
+
+    # ① DataFrame 한 번만 생성
+    atr_df     = pd.DataFrame(df_htf_raw) if df_htf_raw else None
+    atr_state  = None
+    atr_val    = atr_pct(atr_df) if atr_df is not None else None
+    if atr_val is not None:
+        if atr_val < ATR_LOW_TH_PCT:
+            atr_state = "chop"
+        elif atr_val > ATR_HIGH_TH_PCT:
+            atr_state = "trend"
+
+    # • chop 구간 → **신규 진입 차단**
+    if atr_state == "chop" and not pm.has_position(symbol):
+        return
+
+    # ───────── ② 내부 포지션 가격-업데이트 ──────────
+    in_position = pm.has_position(symbol)
+    if in_position:
         try:
             df_ltf = candles.get(symbol, {}).get(ltf_tf)
             if df_ltf and len(df_ltf):
@@ -146,9 +166,9 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                             ltf_df=pd.DataFrame(candles.get(symbol, {}).get(ltf_tf, [])))
         except Exception as e:
             print(f"[WARN] price-update failed: {symbol} → {e}")
-        return
+        pass        # ⬅️ 조기-return 제거 ― Flip 판정에 진입시키기
     
-    # ② 쿨-다운 중이면 스킵
+    # ③ 쿨-다운 중이면 신규 진입·Flip 모두 스킵
     if pm.in_cooldown(symbol):
         return  
       
@@ -166,7 +186,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             return
 
         # ▸ 심볼·타임프레임 메타데이터 주입
-        htf = pd.DataFrame(df_htf)
+        # ② 이미 만든 atr_df 재활용
+        htf = atr_df if atr_df is not None else pd.DataFrame(df_htf)
         htf.attrs["symbol"] = base_sym.upper()
         htf.attrs["tf"]     = htf_tf
 
@@ -192,6 +213,22 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         signal, direction, trg_zone = is_iof_entry(htf, ltf, tick_size)
         if not signal or direction is None:
             return
+
+        # ─── ④ Flip(포지션 전환) 처리 ─────────────────
+        if in_position:
+            cur_dir = pm.positions[symbol]["direction"]
+            if cur_dir == direction:
+                # 같은 방향이면 새 주문 불필요
+                return
+            if atr_state == "trend" and pm.can_flip(symbol):
+                # Flip 시 ATR 정보까지 함께 표시
+                atr_info = f" | ATR={atr_val:.2f}%" if atr_val is not None else ""
+                print(f"[FLIP] {symbol} {cur_dir.upper()} → {direction.upper()}{atr_info}")
+                pm.close(symbol)           # 시장가 청산
+                pm.register_flip(symbol)   # 쿨다운 시작
+            else:
+                # Flip 불가(chop·cooldown) → 종료
+                return
 
         # ───── LTF(1m·5m) 반전이 확인될 때까지 대기 ─────
         if not confirm_ltf_reversal(ltf, direction):
