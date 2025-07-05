@@ -124,7 +124,16 @@ def cancel_order(symbol: str, order_id: int):
         return cancel_price_trigger(order_id)
 
     from exchange.binance_api import cancel_order as binance_cancel_order
-    return binance_cancel_order(symbol, order_id)
+    try:
+        # Binance: 정상적으로 취소되면 True 반환
+        return binance_cancel_order(symbol, order_id)
+    except Exception as e:
+        # -2011: Unknown order sent   /   -1102: orderId 누락·오류
+        # ↳ 이미 체결‧취소된 주문을 다시 지우려 할 때 흔히 발생
+        if any(code in str(e) for code in ("-2011", "-1102")):
+            # benign → False 반환해 상위 로직이 “이미 없어졌다”로 간주
+            return False
+        raise          # 그 외 에러는 그대로 올려서 디버그
 
 def get_open_position(symbol: str, *args, **kwargs):
     """
