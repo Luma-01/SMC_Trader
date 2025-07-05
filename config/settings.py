@@ -93,7 +93,7 @@ ATR_COOLDOWN_HR  = 2       # 최근 Flip → 2 h 잠금
 #   0.10  ==  10 %   /  0.05 ==  5 %
 #   코드 곳곳에서 import 해서 사용합니다.
 # ─────────────────────────────────────────────
-TRADE_RISK_PCT = 0.1
+TRADE_RISK_PCT = 0.2
 
 def fetch_max_leverages():
     if not ENABLE_BINANCE:
