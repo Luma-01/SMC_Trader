@@ -49,6 +49,12 @@ EXCHANGE_MODE   = os.getenv("EXCHANGE_MODE", "binance").lower()
 ENABLE_BINANCE  = EXCHANGE_MODE in ("binance", "both")
 ENABLE_GATE     = EXCHANGE_MODE in ("gate",    "both")
 
+# ────────────────────────────────
+#  백테스트 전용 MockExchange
+#  사용 예:  export EXCHANGE_MODE=mock
+# ────────────────────────────────
+ENABLE_MOCK     = EXCHANGE_MODE == "mock"
+
 # 심볼 테이블은 미리 빈 dict 로 초기화
 SYMBOLS: dict[str, dict] = {}
 

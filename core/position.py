@@ -144,7 +144,8 @@ class PositionManager:
         * 진입 직후 수 초 안에 트레일링 SL 이 갱신‑체결되는 현상을 막기 위해
           `created_at` 타임스탬프를 저장한다.
         """
-
+        basis_txt = f" | {basis}" if basis else " | NO_BASIS"
+        
         # ─── ① SL 기본값 결정 ─────────────────────────
         if sl is None:
             # ①-A MSS-only protective 가 있으면 그대로

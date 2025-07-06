@@ -183,10 +183,10 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             return
 
         # Gate · Binance 모두 Decimal 로 통일 (precision 오류 방지!)
-        tick_size = (
-            Decimal(str(get_tick_size_gate(symbol))) if is_gate
-            else Decimal(str(get_tick_size(base_sym)))
-        )
+        # ── tickSize 가져오기 (Mock 모드 포함 안전 버전)
+        from exchange.router import get_tick_size as router_tick
+        tick_src = get_tick_size_gate if is_gate else router_tick
+        tick_size = Decimal(str(tick_src(base_sym)))
 
         # ⬇️ htf 전체 DataFrame을 그대로 넘겨야 attrs 를 활용할 수 있음
         signal, direction, trg_zone = is_iof_entry(htf, ltf, tick_size)
@@ -295,12 +295,30 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             sl_dec = (sl_dec - adj) if direction == "long" else (sl_dec + adj)
             sl_dec = sl_dec.quantize(tick_size)
 
-        # ── 4) RR 비율 동일하게 TP 산출 ────────────────────────────
-        rr_dec = Decimal(str(RR))
+        # ── 4) HTF 반대 OB extreme에 TP 설정 ─────────────────────
+        tp_dec = None
+        htf_ob = detect_ob(htf)      # htf = HTF DataFrame, 위에서 이미 attrs 세팅됨
+        # direction에 따라 opposite OB
         if direction == "long":
-            tp_dec = (entry_dec + (entry_dec - sl_dec) * rr_dec).quantize(tick_size)
+            # 가장 가까운 위쪽 bearish OB의 low
+            candidates = [Decimal(str(z["low"])) for z in htf_ob if z["type"] == "bearish" and Decimal(str(z["low"])) > entry_dec]
+            if candidates:
+                tp_dec = min(candidates)
         else:
-            tp_dec = (entry_dec - (sl_dec - entry_dec) * rr_dec).quantize(tick_size)
+            # 가장 가까운 아래 bullish OB의 high
+            candidates = [Decimal(str(z["high"])) for z in htf_ob if z["type"] == "bullish" and Decimal(str(z["high"])) < entry_dec]
+            if candidates:
+                tp_dec = max(candidates)
+
+        # fallback: 기존 RR TP
+        if tp_dec is None:
+            rr_dec = Decimal(str(RR))
+            if direction == "long":
+                tp_dec = (entry_dec + (entry_dec - sl_dec) * rr_dec).quantize(tick_size)
+            else:
+                tp_dec = (entry_dec - (sl_dec - entry_dec) * rr_dec).quantize(tick_size)
+        else:
+            tp_dec = tp_dec.quantize(tick_size)
 
         sl, tp = float(sl_dec), float(tp_dec)
 
@@ -341,12 +359,20 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         if order_ok:
             # pm.enter() 내부에서 SL 주문까지 생성하므로
             # 중복 update_stop_loss() 호출을 제거합니다
-            basis = None
-            if trg_zone is not None:                 # ← NameError 방지
+            # ─ basis 항상 생성: trg_zone > zone > fallback
+            if trg_zone is not None:
                 basis = (
                     f"{trg_zone['kind'].upper()} "
                     f"{trg_zone['low']}~{trg_zone['high']}"
                 )
+            elif zone is not None:
+                basis = (
+                    f"{zone.get('pattern','ZONE').upper()} "
+                    f"{zone['low']}~{zone['high']}"
+                )
+            else:
+                # fallback: 직전 캔들 extreme, 등
+                basis = f"NO_BLOCK zone=None"
             # MSS-only 진입이면 trg_zone 안에 보호선이 같이 들어옴
             prot_lv = trg_zone.get("protective") if isinstance(trg_zone, dict) else None
             pm.enter(
@@ -503,24 +529,6 @@ async def reconcile_internal_with_live():
                 price = live.get("price", 0) if live else 0
             pm.force_exit(sym, price)                # 내부 on_exit 포함
 
-    # ② 옵션 : 거래소에만 존재하고 내부엔 없는 포지션 동기화
-    #   필요한 경우 아래 블록 주석 제거
-    """
-    all_symbols = list(SYMBOLS.keys())       # Binance 심볼 기준
-    if ENABLE_GATE:
-        all_symbols += [to_gate(s) for s in SYMBOLS_GATE]
-    for sym in all_symbols:
-        if pm.has_position(sym):
-            continue
-        live = get_open_position(sym)
-        if live and abs(live.get("entry", 0)) > 0:
-            dir_ = live["direction"]
-            entry = live["entry"]
-            sl, tp = calculate_sl_tp(entry, dir_, SL_BUFFER, RR)
-            print(f"[SYNC] 외부 포지션 가져오기 → {sym}")
-            pm.init_position(sym, dir_, entry, sl, tp)
-    """
-
 async def main():
     initialize()
     await asyncio.gather(
@@ -622,3 +630,62 @@ if __name__ == "__main__":
     else:
         # ▸ 전체 전략 루프 실행
         asyncio.run(main())
+
+# ────────────────────────────────────────────────
+#  📍 백테스트 전용 싱글-틱 헬퍼
+#     backtest.py 가 매 1분봉마다 호출
+# ────────────────────────────────────────────────
+def backtest_tick(symbol: str, candle: dict, exec_strategy: bool = True):
+    """
+    ▸ candle = {"timestamp": …, "open": …, "high": …, "low": …, "close": …, "volume": …}
+    ▸ 1) core.data_feed.candles 데크에 캔들 적재
+    ▸ 2) handle_pair() 로 기존 진입-판단 로직 실행
+    """
+    from core.data_feed import candles
+    
+    # ────────────────────────────────
+    #  🔧 타임프레임 문자열 → 분 환산
+    # ────────────────────────────────
+    _tf_cache = {}
+    def _tf_minutes(tf: str) -> int:
+        if tf not in _tf_cache:
+            unit = tf[-1]
+            n    = int(tf[:-1])
+            _tf_cache[tf] = n * (60 if unit == "h" else 1)
+        return _tf_cache[tf]
+
+    # LTF · HTF 간격 계산
+    ltf_min = _tf_minutes(LTF_TF)   # ex) 5
+    htf_min = _tf_minutes(HTF_TF)   # ex) 60
+
+    # CSV가 5m봉이므로 바로 LTF 큐에 추가
+    from collections import deque
+    ltf_q = candles.setdefault(symbol, {}).setdefault(LTF_TF, deque(maxlen=3000))
+    ltf_q.append(candle)
+
+    # LTF → HTF 집계만
+    ratio = htf_min // ltf_min        # ex) 60//5 = 12
+    buf = backtest_tick.__dict__.setdefault("buf_htf", [])
+    buf.append(candle)
+    if len(buf) == ratio:
+        htf_candle = {
+            "timestamp": buf[0]["timestamp"],
+            "time":      buf[0]["time"],
+            "open":      buf[0]["open"],
+            "high":      max(x["high"] for x in buf),
+            "low":       min(x["low"]  for x in buf),
+            "close":     buf[-1]["close"],
+            "volume":    sum(x["volume"] for x in buf),
+        }
+        htf_q = candles[symbol].setdefault(HTF_TF, deque(maxlen=1000))
+        htf_q.append(htf_candle)
+        buf.clear()
+
+    # 기존 전략 로직 호출 (동기 버전)
+    try:
+        asyncio.run(handle_pair(symbol, {}, HTF_TF, LTF_TF))
+    except RuntimeError:
+        # 이미 이벤트 루프가 돌고 있을 땐 새 루프 생성
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(handle_pair(symbol, {}, HTF_TF, LTF_TF))
+        loop.close()

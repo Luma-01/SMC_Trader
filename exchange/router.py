@@ -15,6 +15,16 @@ from exchange.gate_sdk import (
     normalize_contract_symbol as to_gate,
     place_order               as gate_place,
 )
+# ───────── Mock ───────────
+from config.settings import ENABLE_MOCK
+if ENABLE_MOCK:
+    from exchange.mock_exchange import (
+        place_order             as mock_place,
+        update_stop_loss_order  as mock_sl,
+        update_take_profit_order as mock_tp,
+        get_open_position       as mock_pos,
+    )
+
 # ── 표준 라이브러리 ─────────────────────────────
 from decimal import Decimal
 
@@ -25,7 +35,11 @@ def get_tick_size(symbol: str) -> float:
     """
     Binance :  BTCUSDT
     Gate    :  BTC_USDT
+    Mock    :  단순 0.1 반환
     """
+    # 📌 백테스트(Mock) 모드에선 실거래소 쿼리를 건너뛴다
+    if ENABLE_MOCK:
+        return 0.1        # BTC 선물 기본 tickSize
     try:
         if symbol.endswith("_USDT"):
             # Gate 심볼 → gate_sdk 만 **지연 import**
@@ -47,6 +61,27 @@ for sym in SYMBOLS_GATE:
     except ValueError as e:
         # 콘솔에 경고. 필요시 send_discord_debug 로 대체 가능
         print(f"[WARN] Gate 심볼 변환 실패, 스킵: {sym} ({e})")
+
+# ─────────────────────────────────────────────
+#  ▶ Mock 모드일 때 binance/gate 함수를 전부 Mock 으로 덮어쓰기
+# ─────────────────────────────────────────────
+if ENABLE_MOCK:
+    # Mock 함수 import
+    from exchange.mock_exchange import (
+        place_order             as mock_place,
+        update_stop_loss_order  as mock_sl,
+        update_take_profit_order as mock_tp,
+        get_open_position       as mock_pos,
+    )
+
+    # 동일한 이름으로 재지정 (trader.py 등 기존 코드 수정 불필요)
+    binance_place = gate_place = mock_place
+    binance_sl    = gate_sl    = mock_sl
+    binance_tp    = gate_tp    = mock_tp
+    binance_pos   = gate_pos   = mock_pos
+
+    # Gate 구분 세트는 의미 없으므로 비워둔다
+    GATE_SET.clear()
 
 def update_stop_loss(symbol: str, direction: str, stop_price: float):
     """

@@ -217,5 +217,9 @@ def is_iof_entry(
     print(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}")
     #send_discord_debug(f"[CONFIRM] LTF 구조 컨펌 완료 → {last_struct}", "aggregated")
 
+    # 🚩 zone_and_mss 모드에서는 trigger_zone(OB/BB)이 반드시 있어야 진입
+    if ENTRY_METHOD == "zone_and_mss" and not trigger_zone:
+        print(f"[BUG] zone_and_mss인데 trigger_zone 없음! 진입 차단")
+        return False, direction, None
     # 여기까지 왔으면 HTF 존 + LTF BOS/CHoCH 모두 OK → 진입
     return True, direction, trigger_zone
