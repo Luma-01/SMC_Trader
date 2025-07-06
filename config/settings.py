@@ -23,7 +23,7 @@ ENTRY_METHOD = os.getenv("ENTRY_METHOD", "zone_and_mss").lower()
 #   •  "mtf"   → ltf + mtf  (기존 동작)
 #   •  .env  에  PROTECTIVE_MODE  지정 가능
 # ───────────────────────────────────────────────
-PROTECTIVE_MODE = os.getenv("PROTECTIVE_MODE", "ltf").lower()
+PROTECTIVE_MODE = os.getenv("PROTECTIVE_MODE", "mtf").lower()
 ALLOWED_PROTECTIVE = {"ltf", "mtf"}
 if PROTECTIVE_MODE not in ALLOWED_PROTECTIVE:
     raise ValueError(
