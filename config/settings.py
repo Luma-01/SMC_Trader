@@ -74,19 +74,9 @@ TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 # ▶ Risk-Reward 1 : 1.5  (2025-07-04 조정)
 RR = 1.1
 SL_BUFFER = 0.005
-CANDLE_LIMIT = 150
+CANDLE_LIMIT = 1500
 DEFAULT_LEVERAGE = 10
 CUSTOM_LEVERAGES = {}
-
-# ─────────────────────────────────────────────
-# 📊  ATR(Volatility) 필터 파라미터                ◆ NEW ◆
-#   • LOW / HIGH 문턱치는 % (ATR/close×100)
-#   • COOLDOWN : 포지션-Flip 후 N 시간 동안 재-Flip 금지
-# ─────────────────────────────────────────────
-ATR_PERIOD       = 14
-ATR_LOW_TH_PCT   = 0.8     # chop 구간(진입 차단)
-ATR_HIGH_TH_PCT  = 1.5     # trend 구간(Flip 허용)
-ATR_COOLDOWN_HR  = 2       # 최근 Flip → 2 h 잠금
 
 # ─────────────────────────────────────────────
 # 💰 한 포지션당 사용-비중 (지갑 총 잔고 대비)
@@ -123,7 +113,7 @@ def fetch_top_futures_symbols(
     ▸ 24h 거래량 상위 심볼을 (limit + overshoot) 만큼 가져온다.
       - exchangeInfo 에서 빠지는 심볼을 제외하고도 최종 10개를 확보하기 위함.
     """
-    EXCLUDE_SYMBOLS = {}  # ⛔ 제외할 심볼
+    EXCLUDE_SYMBOLS = {"BTCUSDT"}  # ⛔ 제외할 심볼
     try:
         ticker = requests.get("https://fapi.binance.com/fapi/v1/ticker/24hr").json()
         sorted_by_volume = sorted(ticker, key=lambda x: float(x['quoteVolume']), reverse=True)

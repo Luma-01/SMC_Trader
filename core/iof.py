@@ -128,7 +128,7 @@ def is_iof_entry(
     htf_bb = htf_bb or []
     print(f"[DEBUG] {symbol}-{tf}  HTF_OB={len(htf_ob)}  HTF_BB={len(htf_bb)}")
 
-    LOOKBACK_HTF = 20          # 최근 HTF 존 n개만 검사
+    LOOKBACK_HTF = 50          # 최근 HTF 존 n개만 검사
 
     def _in_zone(z):
         low  = Decimal(str(z['low'])).quantize(tick_size)
