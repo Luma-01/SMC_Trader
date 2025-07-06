@@ -72,7 +72,7 @@ LTF_TF = os.getenv("LTF_TF", "5m").lower()   # Low-Time-Frame
 TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 
 # ▶ Risk-Reward 1 : 1.5  (2025-07-04 조정)
-RR = 1.1
+RR = 1.5
 SL_BUFFER = 0.005
 CANDLE_LIMIT = 1500
 DEFAULT_LEVERAGE = 10
