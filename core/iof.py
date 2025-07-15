@@ -103,8 +103,26 @@ def is_iof_entry(
     current_price = Decimal(str((ltf_df['high'].iloc[-1] + ltf_df['low'].iloc[-1]) / 2))
     current_price = Decimal(str(current_price)).quantize(tick_size)
 
-    buffer = tick_size * 10  # ✅ 진입 완화용 버퍼 설정
-    near_buffer = tick_size * 10  # ✅ 근접 로그용 완화 조건
+    # ✅ ATR 기반 동적 버퍼 계산
+    try:
+        # ATR 계산 (14봉 기준)
+        htf_df['prev_close'] = htf_df['close'].shift(1)
+        tr = pd.concat([
+            htf_df['high'] - htf_df['low'],
+            (htf_df['high'] - htf_df['prev_close']).abs(),
+            (htf_df['low'] - htf_df['prev_close']).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(window=14).mean().iloc[-1]
+        
+        # ATR 기반 동적 버퍼 (ATR의 20%)
+        if not pd.isna(atr):
+            buffer = Decimal(str(atr * 0.2)).quantize(tick_size)
+        else:
+            buffer = tick_size * 10  # 폴백: 고정 버퍼
+    except Exception:
+        buffer = tick_size * 10  # 오류 시 고정 버퍼 사용
+    
+    near_buffer = buffer  # 근접 로그용도 같은 버퍼 사용
 
     # ---------------------------------------------------------------------
     # 3-A)  ❖  HTF OB/BB 존 안에 있는지 먼저 확인
@@ -178,8 +196,8 @@ def is_iof_entry(
             return False, direction, None
         last_struct = last_structs.iloc[-1]
 
-        need_long  = last_struct in ('BOS_up', 'CHoCH_up')
-        need_short = last_struct in ('BOS_down', 'CHoCH_down')
+        need_long  = last_struct in ('BOS_up', 'CHoCH_up', 'OB_Break_up')
+        need_short = last_struct in ('BOS_down', 'CHoCH_down', 'OB_Break_down')
 
         if (direction == 'long' and need_long) or (direction == 'short' and need_short):
             print(f"[ENTRY] MSS-only trigger ({last_struct}) → zone_or_mss")
@@ -206,8 +224,8 @@ def is_iof_entry(
         return False, direction, None
     last_struct = recent_structs.iloc[-1]
 
-    need_long  = last_struct in ('BOS_up', 'CHoCH_up')
-    need_short = last_struct in ('BOS_down', 'CHoCH_down')
+    need_long  = last_struct in ('BOS_up', 'CHoCH_up', 'OB_Break_up')
+    need_short = last_struct in ('BOS_down', 'CHoCH_down', 'OB_Break_down')
 
     if (direction == 'long'  and not need_long) or \
        (direction == 'short' and not need_short):
