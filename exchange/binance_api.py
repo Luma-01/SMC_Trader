@@ -577,27 +577,27 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         step  = float(get_tick_size(symbol) ** 0)  # = 1.0 (수량 반올림용)
         prec  = get_quantity_precision(symbol)
         
-        # ────── 절반 익절 최적화 ──────────────────────────────
-        # 남은 물량이 step 이상이 되도록 보장
+        # ────── 절반 익절 로직 (단순화) ──────────────────────────────
+        # 정확한 절반 익절만 수행
         qty_half = qty_full / 2
         qty_tp_raw = round(qty_half, prec)
-        remaining_qty = qty_full - qty_tp_raw
         
-        if qty_tp_raw >= step and remaining_qty >= step:
+        if qty_tp_raw >= step:
             qty = qty_tp_raw
-            print(f"[BINANCE] 절반 익절: {qty}/{qty_full} (남은 물량: {remaining_qty})")
-        elif qty_full >= step * 2:
-            # 전체 물량이 충분하면 균등 분할
-            qty = round(max(step, qty_full / 2), prec)
             remaining_qty = qty_full - qty
-            print(f"[BINANCE] 균등 분할 익절: {qty}/{qty_full} (남은 물량: {remaining_qty})")
+            print(f"[BINANCE] 절반 익절: {qty}/{qty_full} (남은 물량: {remaining_qty})")
         else:
-            # 전체 물량이 부족하면 전량 TP
+            # 절반 익절이 stepSize보다 작으면 전량 TP
             qty = qty_full
-            print(f"[BINANCE] ⚠️ 전량 익절 (물량 부족): {qty}/{qty_full}")
+            print(f"[BINANCE] ⚠️ 전량 익절 (절반이 stepSize 미달): {qty}/{qty_full}")
         
-        # 최소 step 보장
-        qty = round(max(step, qty), prec)
+        # 최종 검증: stepSize 미달이면 전량 TP
+        if qty < step:
+            qty = qty_full
+            print(f"[BINANCE] ⚠️ stepSize 미달로 전량 익절: {qty}/{qty_full}")
+        
+        # 정밀도 맞추기
+        qty = round(qty, prec)
 
         # ③ 기존 reduce-only LIMIT 주문 취소
         try:

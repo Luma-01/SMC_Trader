@@ -681,26 +681,21 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
                                  getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
         qty_tp_raw = math.floor(qty_half / step) * step
         
-        # ────── 절반 익절 최적화 ──────────────────────────────
-        # 남은 물량이 step 이상이 되도록 보장
-        remaining_qty = qty_full - qty_tp_raw
-        if qty_tp_raw >= step and remaining_qty >= step:
+        # ────── 절반 익절 로직 (단순화) ──────────────────────────────
+        # 정확한 절반 익절만 수행
+        if qty_tp_raw >= step:
             qty_tp = qty_tp_raw
-            print(f"[GATE] 절반 익절: {qty_tp}/{qty_full} (남은 물량: {remaining_qty})")
-        elif qty_full >= step * 2:
-            # 전체 물량이 충분하면 균등 분할
-            qty_tp = math.floor(qty_full / 2 / step) * step
-            if qty_tp < step:
-                qty_tp = step
             remaining_qty = qty_full - qty_tp
-            print(f"[GATE] 균등 분할 익절: {qty_tp}/{qty_full} (남은 물량: {remaining_qty})")
+            print(f"[GATE] 절반 익절: {qty_tp}/{qty_full} (남은 물량: {remaining_qty})")
         else:
-            # 전체 물량이 부족하면 전량 TP
+            # 절반 익절이 stepSize보다 작으면 전량 TP
             qty_tp = qty_full
-            print(f"[GATE] ⚠️ 전량 익절 (물량 부족): {qty_tp}/{qty_full}")
+            print(f"[GATE] ⚠️ 전량 익절 (절반이 stepSize 미달): {qty_tp}/{qty_full}")
         
-        # stepSize 미달이면 ➜ 전량 TP
-        qty_tp = qty_tp if qty_tp >= step else qty_full
+        # 최종 검증: stepSize 미달이면 전량 TP
+        if qty_tp < step:
+            qty_tp = qty_full
+            print(f"[GATE] ⚠️ stepSize 미달로 전량 익절: {qty_tp}/{qty_full}")
 
         # ① 기존 TP 주문 취소
         try:
