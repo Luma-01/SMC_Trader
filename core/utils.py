@@ -3,7 +3,7 @@
 import pandas as pd
 from typing import Tuple
 
-def refined_premium_discount_filter(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, direction: str, window: int = 20) -> Tuple[bool, str, float, float, float]:
+def refined_premium_discount_filter(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, direction: str, window: int = 50) -> Tuple[bool, str, float, float, float]:
     if htf_df.empty or ltf_df.empty or 'close' not in ltf_df.columns:
         return False, "데이터 부족", None, None, None
 
