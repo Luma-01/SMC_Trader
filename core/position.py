@@ -583,7 +583,30 @@ class PositionManager:
         min_rr    = max(MIN_RR_BASE, tick_rr * 3)
 
         if direction == "long":
-            new_sl = current_price * (1 - threshold_pct)
+            # 기본 퍼센트 트레일링
+            percent_trailing = current_price * (1 - threshold_pct)
+            
+            # 실시간 스윙 저점 계산
+            swing_low = None
+            try:
+                # LTF 데이터에서 스윙 저점 찾기
+                from core.data_feed import get_cached_data
+                ltf_df = get_cached_data(symbol, "1m")
+                if ltf_df is not None and len(ltf_df) > 10:
+                    swing_data = get_ltf_protective(ltf_df, direction, lookback=20, span=2)
+                    if swing_data:
+                        swing_low = swing_data["protective_level"]
+            except Exception as e:
+                print(f"[SWING] {symbol} 스윙 저점 계산 실패: {e}")
+            
+            # 하이브리드 트레일링: 스윙 저점과 퍼센트 트레일링 중 더 보수적인 값
+            if swing_low and swing_low > percent_trailing:
+                new_sl = swing_low
+                print(f"[HYBRID] {symbol} 스윙 저점 기준 트레일링: {swing_low:.4f}")
+            else:
+                new_sl = percent_trailing
+                print(f"[HYBRID] {symbol} 퍼센트 기준 트레일링: {percent_trailing:.4f}")
+            
             if (
                 (new_sl - current_sl) > tick * 2                    # 최소 2 tick 위
                 and self.should_update_sl(symbol, new_sl)
@@ -612,7 +635,29 @@ class PositionManager:
                 
         elif direction == "short":
             # 숏 → “위쪽” = 현재가 + 1 % 
-            new_sl = current_price * (1 + threshold_pct)
+            # 기본 퍼센트 트레일링
+            percent_trailing = current_price * (1 + threshold_pct)
+            
+            # 실시간 스윙 고점 계산
+            swing_high = None
+            try:
+                # LTF 데이터에서 스윙 고점 찾기
+                from core.data_feed import get_cached_data
+                ltf_df = get_cached_data(symbol, "1m")
+                if ltf_df is not None and len(ltf_df) > 10:
+                    swing_data = get_ltf_protective(ltf_df, direction, lookback=20, span=2)
+                    if swing_data:
+                        swing_high = swing_data["protective_level"]
+            except Exception as e:
+                print(f"[SWING] {symbol} 스윙 고점 계산 실패: {e}")
+            
+            # 하이브리드 트레일링: 스윙 고점과 퍼센트 트레일링 중 더 보수적인 값
+            if swing_high and swing_high < percent_trailing:
+                new_sl = swing_high
+                print(f"[HYBRID] {symbol} 스윙 고점 기준 트레일링: {swing_high:.4f}")
+            else:
+                new_sl = percent_trailing
+                print(f"[HYBRID] {symbol} 퍼센트 기준 트레일링: {percent_trailing:.4f}")
             if (
                 (current_sl - new_sl) > tick * 2                 # 최소 2 tick 아래
                 and self.should_update_sl(symbol, new_sl)
