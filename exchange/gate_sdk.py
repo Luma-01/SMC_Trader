@@ -570,6 +570,18 @@ def calculate_quantity_gate(
                           / (contract_val * step_size))
             steps = max(1, steps)
 
+        # ────── 절반 익절 고려 최소 포지션 사이즈 보장 ──────
+        # 절반 익절 후에도 의미 있는 물량이 남도록 최소 4 step 보장
+        min_steps_for_half_exit = 4
+        if steps < min_steps_for_half_exit:
+            # 증거금 여유가 있다면 최소 사이즈로 조정
+            needed_margin = (min_steps_for_half_exit * step_size * contract_val) / leverage
+            if needed_margin <= margin_cap * 0.9:  # 10% 여유 두고 확인
+                steps = min_steps_for_half_exit
+                print(f"[GATE] 절반 익절 고려 최소 사이즈 적용: {steps} steps")
+            else:
+                print(f"[GATE] ⚠️ 절반 익절 고려 시 증거금 부족: steps={steps}")
+
         qty   = round(steps * step_size, precision)
 
         # ──────────────────────────────────────────────────────
@@ -594,11 +606,19 @@ def calculate_quantity_gate(
             )
             return 0.0
 
+        # ────── 절반 익절 후 물량 검증 ──────────────────────────────
+        # 절반 익절 후 남은 물량이 의미 있는지 미리 확인
+        remaining_after_half = qty - math.floor((qty / 2) / step_size) * step_size
+        if remaining_after_half < step_size:
+            print(f"[GATE] ⚠️ 절반 익절 후 남은 물량 부족: {remaining_after_half} < {step_size}")
+            print(f"[GATE] ⚠️ 권장: 더 큰 포지션 사이즈 또는 다른 심볼 고려")
+        
         print(
             f"[GATE] 수량 계산 → raw_qty={raw_qty}, steps={steps}, "
             f"qty={qty}, max_steps={max_steps}, "
             f"min_notional={min_notional_req}, "
-            f"risk_cap={margin_cap}, est_margin={est_margin}"
+            f"risk_cap={margin_cap}, est_margin={est_margin}, "
+            f"half_exit_remaining={remaining_after_half}"
         )
         return qty
     
@@ -660,8 +680,22 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
                                  "size_increment",
                                  getattr(CONTRACT_CACHE[contract], "order_size_min", 1)))
         qty_tp_raw = math.floor(qty_half / step) * step
-        # stepSize 미달이면 ➜ 전량 TP
-        qty_tp = qty_tp_raw if qty_tp_raw >= step else qty_full
+        
+        # ────── 절반 익절 로직 (단순화) ──────────────────────────────
+        # 정확한 절반 익절만 수행
+        if qty_tp_raw >= step:
+            qty_tp = qty_tp_raw
+            remaining_qty = qty_full - qty_tp
+            print(f"[GATE] 절반 익절: {qty_tp}/{qty_full} (남은 물량: {remaining_qty})")
+        else:
+            # 절반 익절이 stepSize보다 작으면 전량 TP
+            qty_tp = qty_full
+            print(f"[GATE] ⚠️ 전량 익절 (절반이 stepSize 미달): {qty_tp}/{qty_full}")
+        
+        # 최종 검증: stepSize 미달이면 전량 TP
+        if qty_tp < step:
+            qty_tp = qty_full
+            print(f"[GATE] ⚠️ stepSize 미달로 전량 익절: {qty_tp}/{qty_full}")
 
         # ① 기존 TP 주문 취소
         try:

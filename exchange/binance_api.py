@@ -520,6 +520,18 @@ def calculate_quantity(
             needed_steps = math.ceil(min_notional / (step_size * price))
             steps = max(steps, needed_steps)
         
+        # ────── 절반 익절 고려 최소 포지션 사이즈 보장 ──────
+        # 절반 익절 후에도 의미 있는 물량이 남도록 최소 4 step 보장
+        min_steps_for_half_exit = 4
+        if steps < min_steps_for_half_exit:
+            # 증거금 여유가 있다면 최소 사이즈로 조정
+            needed_notional = min_steps_for_half_exit * step_size * price
+            if needed_notional <= usdt_balance * leverage * 0.9:  # 10% 여유 두고 확인
+                steps = min_steps_for_half_exit
+                print(f"[BINANCE] 절반 익절 고려 최소 사이즈 적용: {steps} steps")
+            else:
+                print(f"[BINANCE] ⚠️ 절반 익절 고려 시 증거금 부족: steps={steps}")
+        
         qty = round(steps * step_size, precision)
 
         # 증거금 실제 가능 여부(5 % 여유)를 다시 체크
@@ -564,7 +576,28 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         # 기본 정책 : 절반 익절
         step  = float(get_tick_size(symbol) ** 0)  # = 1.0 (수량 반올림용)
         prec  = get_quantity_precision(symbol)
-        qty   = round(max(step, qty_full / 2), prec)
+        
+        # ────── 절반 익절 로직 (단순화) ──────────────────────────────
+        # 정확한 절반 익절만 수행
+        qty_half = qty_full / 2
+        qty_tp_raw = round(qty_half, prec)
+        
+        if qty_tp_raw >= step:
+            qty = qty_tp_raw
+            remaining_qty = qty_full - qty
+            print(f"[BINANCE] 절반 익절: {qty}/{qty_full} (남은 물량: {remaining_qty})")
+        else:
+            # 절반 익절이 stepSize보다 작으면 전량 TP
+            qty = qty_full
+            print(f"[BINANCE] ⚠️ 전량 익절 (절반이 stepSize 미달): {qty}/{qty_full}")
+        
+        # 최종 검증: stepSize 미달이면 전량 TP
+        if qty < step:
+            qty = qty_full
+            print(f"[BINANCE] ⚠️ stepSize 미달로 전량 익절: {qty}/{qty_full}")
+        
+        # 정밀도 맞추기
+        qty = round(qty, prec)
 
         # ③ 기존 reduce-only LIMIT 주문 취소
         try:
