@@ -7,6 +7,7 @@ from core.structure import detect_structure
 from core.ob import detect_ob
 from core.bb import detect_bb
 from core.mss import get_mss_and_protective_low
+from core.utils import refined_premium_discount_filter
 from notify.discord import send_discord_debug
 from typing import Tuple, Optional, Dict
 from decimal import Decimal
@@ -178,6 +179,23 @@ def is_iof_entry(
                 if ENTRY_METHOD == "zone_or_mss":
                     return True, direction, trigger_zone
                 break
+
+    # ──────────────────────────────────────────────────────────
+    #  HTF 프리미엄&디스카운트 필터 적용 (바닥 숏 / 고점 롱 방지)
+    # ──────────────────────────────────────────────────────────
+    if IN_HTF_ZONE:
+        # HTF 존에 있는 경우에만 프리미엄&디스카운트 필터 적용
+        filter_passed, filter_msg, mid_price, ote_low, ote_high = refined_premium_discount_filter(
+            htf_df, ltf_df, direction, window=20
+        )
+        
+        if not filter_passed:
+            print(f"[PREMIUM_DISCOUNT] ❌ {filter_msg}")
+            send_discord_debug(f"[PREMIUM_DISCOUNT] ❌ {filter_msg}", "aggregated")
+            return False, direction, None
+        else:
+            print(f"[PREMIUM_DISCOUNT] ✅ {filter_msg} (mid: {mid_price:.4f}, OTE: {ote_low:.4f}~{ote_high:.4f})")
+            send_discord_debug(f"[PREMIUM_DISCOUNT] ✅ 필터 통과 (mid: {mid_price:.4f})", "aggregated")
 
     # ──────────────────────────────────────────────────────────
     #  HTF 존 OUT 이면서 zone_or_mss 모드?  →  LTF MSS 단독 체크
