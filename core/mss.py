@@ -64,8 +64,8 @@ def get_mss_and_protective_low(
 
     bos_range = df.loc[mss_idx, hi] - df.loc[mss_idx, lo]
     atr_val   = atr.loc[mss_idx]
-    if np.isnan(atr_val) or bos_range < 0.8 * atr_val:
-        print(f"[MSS] {direction.upper()} MSS BOS폭 {bos_range:.2f} < 0.8×ATR({atr_val:.2f}) → 패스")
+    if np.isnan(atr_val) or bos_range < 0.6 * atr_val:
+        print(f"[MSS] {direction.upper()} MSS BOS폭 {bos_range:.2f} < 0.6×ATR({atr_val:.2f}) → 패스")
         return None
 
     # ───── 보호선 계산 ────────────────────────────
@@ -76,7 +76,9 @@ def get_mss_and_protective_low(
 
     # ───── 재진입 제한 ────────────────────────────
     symbol = df.attrs.get("symbol", "UNKNOWN")
-    key    = (symbol, round(protective, 8))  # float 키 정규화
+    # 가격 범위 기반 키 (0.1% 단위로 정규화)
+    price_range = int(protective * 1000)  # 0.1% 단위로 정규화
+    key = (symbol, price_range)
     if REENTRY_COUNT.get(key, 0) >= reentry_limit:
         print(f"[MSS] {symbol} 보호선 {protective:.4f} → 재진입 한도({reentry_limit}) 초과")
         return None

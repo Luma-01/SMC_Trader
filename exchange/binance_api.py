@@ -492,7 +492,8 @@ def calculate_quantity(
     try:
         # ────────────────  진입 비중 설정  ────────────────
         # settings.TRADE_RISK_PCT 를 단일-소스로 사용
-        notional = usdt_balance * leverage * TRADE_RISK_PCT
+        margin_to_use = usdt_balance * TRADE_RISK_PCT  # 사용할 증거금
+        notional = margin_to_use * leverage            # 실제 포지션 크기
         raw_qty = notional / price
 
         # stepSize / notional 최소값 가져오기
