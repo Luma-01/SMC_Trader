@@ -10,6 +10,7 @@ from config.settings import (
     SYMBOLS, TIMEFRAMES, CANDLE_LIMIT, ENABLE_GATE,
     LTF_TF,          # ex) "1h"
     HTF_TF,          # ex) "1d"
+    HTF_CANDLE_LIMIT, # HTF 전용 캔들 제한 (50개)
 )
 import json                        # 🌟 Gate WS 메시지 파싱용
 from notify.discord import send_discord_debug
@@ -23,17 +24,17 @@ LIVE_STREAMS   : set[str] = set()        # 현재 열려있는 심볼 스트림
 STREAM_THREADS : dict[str, threading.Thread] = {}
 
 # ---------------------------------------------------------------------------
-# ⛳  Symbol‑mapping helper (📌 "단 한 곳"에만 유지하기)
+# ⛳  Symbol‑mapping helper (📌 "단 한 곳"에만 유지하기)
 #
-#  · 외부 API → 내부 사용   : to_canon("BTCUSDT") == "BTC_USDT"
-#  · 내부 키   → REST/WS용 : to_binance("BTC_USDT") == "BTCUSDT"
+#  · 외부 API → 내부 사용   : to_canon("BTCUSDT") == "BTC_USDT"
+#  · 내부 키   → REST/WS용 : to_binance("BTC_USDT") == "BTCUSDT"
 #
 #  Canonical key = settings.SYMBOLS 의 키와 동일한 형태로 통일한다.
 # ---------------------------------------------------------------------------
 
 
 def to_canon(sym: str) -> str:
-    """Binance 스타일(sym="BTCUSDT") →  settings.SYMBOLS 키("BTC_USDT")"""
+    """Binance 스타일(sym="BTCUSDT") →  settings.SYMBOLS 키("BTC_USDT")"""
     if sym.endswith("USDT") and not sym.endswith("_USDT"):
         candidate = sym.replace("USDT", "_USDT")
         return candidate if candidate in SYMBOLS else sym
@@ -41,7 +42,7 @@ def to_canon(sym: str) -> str:
 
 
 def to_binance(sym: str) -> str:
-    """Canonical("BTC_USDT") → REST/WS 에 쓰는 "BTCUSDT"""
+    """Canonical("BTC_USDT") → REST/WS 에 쓰는 "BTCUSDT"""
     return sym.replace("_", "")
 # 간단한 게이트 심볼 판별 한 줄짜리
 def is_gate_sym(sym: str) -> bool:
@@ -53,9 +54,13 @@ TIMEFRAMES_BINANCE = TIMEFRAMES
 LTF = LTF_TF
 HTF = HTF_TF
 
+def _get_candle_limit(timeframe: str) -> int:
+    """타임프레임별 캔들 제한 반환 (HTF는 50개로 제한)"""
+    return HTF_CANDLE_LIMIT if timeframe == HTF_TF else CANDLE_LIMIT
+
 def _ws_worker(symbol: str):
     """
-    새 심볼 전용 단일-WS. 1m·5m 등 모든 TIMEFRAMES 를 구독한다.
+    새 심볼 전용 단일-WS. 1m·5m 등 모든 TIMEFRAMES 를 구독한다.
     메인 루프와 동일한 candle append + pm.update_price 호출 로직 재사용.
     """
     global pm               # 스레드 내에서 최신 pm 참조
@@ -144,8 +149,23 @@ async def _run_forever(coro_factory, tag: str):
             # 정상 return 은 비정상 상황 → 곧바로 재시작
             print(f"[WS][{tag}] returned unexpectedly – restarting")
 
-# 캔들 저장소: {symbol: {timeframe: deque}}
-candles = defaultdict(lambda: defaultdict(lambda: deque(maxlen=CANDLE_LIMIT)))
+# 캔들 저장소: {symbol: {timeframe: deque}} - HTF는 50개로 제한
+def _create_candle_deque(tf: str):
+    """타임프레임별 캔들 deque 생성"""
+    limit = _get_candle_limit(tf)
+    return deque(maxlen=limit)
+
+candles = defaultdict(lambda: defaultdict(lambda: _create_candle_deque("default")))
+
+# 심볼별 타임프레임 초기화 함수
+def initialize_candle_storage(symbol: str):
+    """심볼별 타임프레임 캔들 저장소 초기화"""
+    if symbol not in candles:
+        candles[symbol] = {}
+    
+    for tf in TIMEFRAMES:
+        if tf not in candles[symbol]:
+            candles[symbol][tf] = _create_candle_deque(tf)
 
 # 1. 과거 캔들 로딩 (REST)
 # ─────────────────────────── Binance 전용 ───────────────────────────
@@ -265,13 +285,19 @@ def initialize_historical():
     fail_bi: list[str] = []
     fail_ga: list[str] = []
     for symbol in SYMBOLS:
+        # 심볼별 캔들 저장소 초기화
+        initialize_candle_storage(symbol)
+        
         for tf in TIMEFRAMES:
             try:
+                # HTF 캔들 제한 적용
+                limit = _get_candle_limit(tf)
+                
                 if ENABLE_GATE and symbol.endswith("_USDT"):
-                    data = load_historical_candles_gate(symbol, tf)
+                    data = load_historical_candles_gate(symbol, tf, limit)
                     ok_ga += 1
                 else:
-                    data = load_historical_candles_binance(symbol.replace("_", ""), tf)
+                    data = load_historical_candles_binance(symbol.replace("_", ""), tf, limit)
                     ok_bi += 1
 
                 candles[symbol][tf].extend(data)

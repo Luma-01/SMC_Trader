@@ -26,6 +26,8 @@ from config.settings import (
     ENABLE_BINANCE,
     HTF_TF,
     LTF_TF,
+    HTF_CANDLE_LIMIT,
+    USE_OTE_VALIDATION,
 )
 from core.data_feed import (
     candles, initialize_historical, start_data_feed,
@@ -162,7 +164,9 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
          # ▸ candle dict 는 항상 Binance 포맷(BTCUSDT) 키 사용
         df_htf = candles.get(symbol, {}).get(htf_tf)
         df_ltf = candles.get(symbol, {}).get(ltf_tf)
-        if df_htf is None or df_ltf is None or len(df_htf) < 30 or len(df_ltf) < 30:
+        # HTF는 최근 50개 캔들, LTF는 최소 30개 캔들 필요
+        min_htf_candles = min(30, HTF_CANDLE_LIMIT)  # 최대 50개 중 최소 30개 확보
+        if df_htf is None or df_ltf is None or len(df_htf) < min_htf_candles or len(df_ltf) < 30:
             return
 
         # ▸ 심볼·타임프레임 메타데이터 주입

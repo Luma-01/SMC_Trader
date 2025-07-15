@@ -34,9 +34,16 @@ if PROTECTIVE_MODE not in ALLOWED_PROTECTIVE:
 # "mtf" 때만 상위 TF 사용
 USE_HTF_PROTECTIVE = (PROTECTIVE_MODE == "mtf")
 
+# ───────────────────────────────────────────────
+# 🔧 HTF 캔들 제한 (OTE 제외, 최근 50개 캔들만 사용)
+# ───────────────────────────────────────────────
+HTF_CANDLE_LIMIT = int(os.getenv("HTF_CANDLE_LIMIT", "50"))
+USE_OTE_VALIDATION = os.getenv("USE_OTE_VALIDATION", "false").lower() == "true"
+
 # ── 모드 요약을 콘솔·디스코드에 출력 ───────────────────────────
 mode_human = "LTF-only" if PROTECTIVE_MODE == "ltf" else "LTF+HTF"
-msg_cfg = f"🔧 [CONFIG] Protective mode = {mode_human}"
+ote_status = "enabled" if USE_OTE_VALIDATION else "disabled"
+msg_cfg = f"🔧 [CONFIG] Protective mode = {mode_human}, HTF candles = {HTF_CANDLE_LIMIT}, OTE = {ote_status}"
 print(msg_cfg)
 send_discord_debug(msg_cfg, "aggregated")
 
