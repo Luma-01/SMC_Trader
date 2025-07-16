@@ -15,6 +15,7 @@ import json                        # 🌟 Gate WS 메시지 파싱용
 from notify.discord import send_discord_debug
 import pandas as pd
 import threading
+from typing import Optional
 
 # ▸ main.py 에서 생성한 singleton pm 가져오기(순환참조 방지용 late import)
 pm = None                            # ↙ 나중에 set_pm() 으로 주입
@@ -23,17 +24,17 @@ LIVE_STREAMS   : set[str] = set()        # 현재 열려있는 심볼 스트림
 STREAM_THREADS : dict[str, threading.Thread] = {}
 
 # ---------------------------------------------------------------------------
-# ⛳  Symbol‑mapping helper (📌 "단 한 곳"에만 유지하기)
+# ⛳  Symbol‑mapping helper (📌 "단 한 곳"에만 유지하기)
 #
-#  · 외부 API → 내부 사용   : to_canon("BTCUSDT") == "BTC_USDT"
-#  · 내부 키   → REST/WS용 : to_binance("BTC_USDT") == "BTCUSDT"
+#  · 외부 API → 내부 사용   : to_canon("BTCUSDT") == "BTC_USDT"
+#  · 내부 키   → REST/WS용 : to_binance("BTC_USDT") == "BTCUSDT"
 #
 #  Canonical key = settings.SYMBOLS 의 키와 동일한 형태로 통일한다.
 # ---------------------------------------------------------------------------
 
 
 def to_canon(sym: str) -> str:
-    """Binance 스타일(sym="BTCUSDT") →  settings.SYMBOLS 키("BTC_USDT")"""
+    """Binance 스타일(sym="BTCUSDT") →  settings.SYMBOLS 키("BTC_USDT")"""
     if sym.endswith("USDT") and not sym.endswith("_USDT"):
         candidate = sym.replace("USDT", "_USDT")
         return candidate if candidate in SYMBOLS else sym
@@ -41,7 +42,7 @@ def to_canon(sym: str) -> str:
 
 
 def to_binance(sym: str) -> str:
-    """Canonical("BTC_USDT") → REST/WS 에 쓰는 "BTCUSDT"""
+    """Canonical("BTC_USDT") → REST/WS 에 쓰는 "BTCUSDT"""
     return sym.replace("_", "")
 # 간단한 게이트 심볼 판별 한 줄짜리
 def is_gate_sym(sym: str) -> bool:
@@ -52,6 +53,45 @@ def is_gate_sym(sym: str) -> bool:
 TIMEFRAMES_BINANCE = TIMEFRAMES
 LTF = LTF_TF
 HTF = HTF_TF
+
+# ---------------------------------------------------------------------------
+# ⛳ 캐시된 데이터 조회 함수 (get_cached_data 구현)
+# ---------------------------------------------------------------------------
+
+def get_cached_data(symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
+    """
+    캐시된 캔들 데이터를 DataFrame으로 반환
+    
+    Args:
+        symbol: 심볼 (예: "BTC_USDT" 또는 "BTCUSDT")
+        timeframe: 타임프레임 (예: "1m", "5m", "1h", "1d")
+    
+    Returns:
+        pd.DataFrame 또는 None (데이터가 없을 경우)
+    """
+    # 심볼을 정규화 (canonical 형태로 변환)
+    canonical_symbol = to_canon(symbol.upper())
+    
+    # 캔들 데이터 확인
+    if canonical_symbol not in candles:
+        return None
+        
+    if timeframe not in candles[canonical_symbol]:
+        return None
+        
+    candle_data = list(candles[canonical_symbol][timeframe])
+    
+    if not candle_data:
+        return None
+        
+    # DataFrame으로 변환
+    df = pd.DataFrame(candle_data)
+    
+    # 시간 컬럼을 인덱스로 설정
+    if 'time' in df.columns:
+        df.set_index('time', inplace=True)
+    
+    return df
 
 def _ws_worker(symbol: str):
     """

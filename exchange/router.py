@@ -204,7 +204,7 @@ def close_position_market(symbol: str):
     def _pos_size(p: dict) -> float:
         """
         size, positionAmt, qty … 여러 후보 키를 순회하며
-        첫 번째로 “숫자 변환 가능” 한 값을 반환
+        첫 번째로 "숫자 변환 가능" 한 값을 반환
         """
         for k in ("size", "positionAmt", "qty", "amount"):
             v = p.get(k)
@@ -240,5 +240,71 @@ def close_position_market(symbol: str):
                        order_type="MARKET", reduceOnly=True)
     if not ok:
         raise RuntimeError("Binance market-close failed")
+    return ok
+
+def close_position_partial(symbol: str, ratio: float = 0.5):
+    """
+    현재 열려있는 포지션의 일부를 **시장가·reduce-only** 로 청산
+    
+    Args:
+        symbol: 심볼 (예: "BTCUSDT" 또는 "BTC_USDT")
+        ratio: 청산할 비율 (0.5 = 50%, 1.0 = 100%)
+    
+    Returns:
+        주문 결과 또는 None
+    """
+    pos = get_open_position(symbol)
+    if not pos:
+        print(f"[PARTIAL CLOSE] {symbol} 포지션 없음")
+        return None
+
+    # ── 1) 수량 추출 ──────────────────────────────
+    def _pos_size(p: dict) -> float:
+        """
+        size, positionAmt, qty … 여러 후보 키를 순회하며
+        첫 번째로 "숫자 변환 가능" 한 값을 반환
+        """
+        for k in ("size", "positionAmt", "qty", "amount"):
+            v = p.get(k)
+            if v not in (None, '', 0):
+                try:
+                    return abs(float(v))
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    total_size = _pos_size(pos)
+    if total_size == 0:
+        print(f"[PARTIAL CLOSE] {symbol} 포지션 사이즈 0")
+        return None
+
+    # 청산할 수량 계산
+    partial_size = total_size * ratio
+    
+    # ── 2) 방향 판단 ──────────────────────────────
+    direction = pos.get("direction")
+    if direction is None:
+        # Binance: positionAmt 양수=Long, 음수=Short
+        amt = float(pos.get("positionAmt", 0))
+        direction = "long" if amt > 0 else "short"
+
+    side = "sell" if direction == "long" else "buy"
+
+    print(f"[PARTIAL CLOSE] {symbol} {direction.upper()} 부분 청산: {partial_size:.6f} / {total_size:.6f} ({ratio*100:.1f}%)")
+
+    # ── 3) 거래소별 주문 라우팅 ────────────────────
+    if "_USDT" in symbol:      # Gate
+        ok = gate_place(symbol, side, partial_size,
+                        order_type="MARKET", reduceOnly=True)
+        if not ok:
+            print(f"[PARTIAL CLOSE] {symbol} Gate 부분 청산 실패")
+            return None
+        return ok
+    # Binance
+    ok = binance_place(symbol, side, partial_size,
+                       order_type="MARKET", reduceOnly=True)
+    if not ok:
+        print(f"[PARTIAL CLOSE] {symbol} Binance 부분 청산 실패")
+        return None
     return ok
     
