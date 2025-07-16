@@ -2,10 +2,15 @@
 
 import pandas as pd
 from typing import Tuple
+from config.settings import HTF_PREMIUM_DISCOUNT_WINDOW
 
-def refined_premium_discount_filter(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, direction: str, window: int = 20) -> Tuple[bool, str, float, float, float]:
+def refined_premium_discount_filter(htf_df: pd.DataFrame, ltf_df: pd.DataFrame, direction: str, window: int = None) -> Tuple[bool, str, float, float, float]:
     if htf_df.empty or ltf_df.empty or 'close' not in ltf_df.columns:
         return False, "데이터 부족", None, None, None
+
+    # window가 None이면 설정값 사용
+    if window is None:
+        window = HTF_PREMIUM_DISCOUNT_WINDOW
 
     htf_recent = htf_df.tail(window)
     htf_high = htf_recent['high'].max()

@@ -77,6 +77,11 @@ LTF_TF = os.getenv("LTF_TF", "5m").lower()   # Low-Time-Frame
 #  ↳ 필요 시 ‘추가’ 프레임을 세트에 넣어주면 된다.
 TIMEFRAMES = sorted({HTF_TF, LTF_TF})
 
+# ───────────────────────────────────────────────
+# HTF 프리미엄&디스카운트 필터 설정
+# ───────────────────────────────────────────────
+HTF_PREMIUM_DISCOUNT_WINDOW = 20  # HTF 캔들 윈도우 개수
+
 # ▶ Risk-Reward 1 : 1.5  (2025-07-04 조정)
 RR = 1.5
 SL_BUFFER = 0.005
