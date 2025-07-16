@@ -20,6 +20,7 @@ from exchange.router import (
     update_take_profit,      # ★ NEW
     cancel_order,
     close_position_market,
+    close_position_partial,  # ★ NEW
     get_open_position,
 )
 from core.data_feed import ensure_stream
@@ -254,12 +255,29 @@ class PositionManager:
         # ───────────────────────────────────────────────
         # ❶ 1차 TP(절반 익절) 달성 여부 **먼저** 확인
         #    – 트레일링으로 TP 가 올라가기 전에 판정해야
-        #      ‘TP 상승→즉시 익절’ 오류를 방지할 수 있다
+        #      'TP 상승→즉시 익절' 오류를 방지할 수 있다
         # ───────────────────────────────────────────────
         if not half_exit:
             if direction == "long" and current_price >= pos["tp"]:
-                print(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}")
-                send_discord_message(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.2f}", "aggregated")
+                print(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.5f} (TP: {pos['tp']:.5f})")
+                send_discord_message(f"[PARTIAL TP] {symbol} LONG 절반 익절 @ {current_price:.5f} (TP: {pos['tp']:.5f})", "aggregated")
+                
+                # ★ 실제로 절반 물량 청산 실행
+                try:
+                    close_result = close_position_partial(symbol, ratio=0.5)
+                    if close_result:
+                        print(f"[PARTIAL TP] {symbol} 절반 물량 청산 성공")
+                        send_discord_debug(f"[PARTIAL TP] {symbol} 절반 물량 청산 성공", "aggregated")
+                    else:
+                        print(f"[PARTIAL TP] {symbol} 절반 물량 청산 실패")
+                        send_discord_debug(f"[PARTIAL TP] {symbol} 절반 물량 청산 실패", "aggregated")
+                        # 청산 실패 시 half_exit 상태 변경하지 않음
+                        return
+                except Exception as e:
+                    print(f"[PARTIAL TP] {symbol} 절반 물량 청산 오류: {e}")
+                    send_discord_debug(f"[PARTIAL TP] {symbol} 절반 물량 청산 오류: {e}", "aggregated")
+                    return
+                
                 send_discord_debug(f"[DEBUG] {symbol} LONG 1차 익절 완료", "aggregated")
                 pos["half_exit"] = True
 
@@ -288,8 +306,25 @@ class PositionManager:
                         send_discord_debug(f"[SL] {symbol} 본절로 이동 → {new_sl:.4f}", "aggregated")
             
             elif direction == "short" and current_price <= pos["tp"]:
-                print(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}")
-                send_discord_message(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.2f}", "aggregated")
+                print(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.5f} (TP: {pos['tp']:.5f})")
+                send_discord_message(f"[PARTIAL TP] {symbol} SHORT 절반 익절 @ {current_price:.5f} (TP: {pos['tp']:.5f})", "aggregated")
+                
+                # ★ 실제로 절반 물량 청산 실행
+                try:
+                    close_result = close_position_partial(symbol, ratio=0.5)
+                    if close_result:
+                        print(f"[PARTIAL TP] {symbol} 절반 물량 청산 성공")
+                        send_discord_debug(f"[PARTIAL TP] {symbol} 절반 물량 청산 성공", "aggregated")
+                    else:
+                        print(f"[PARTIAL TP] {symbol} 절반 물량 청산 실패")
+                        send_discord_debug(f"[PARTIAL TP] {symbol} 절반 물량 청산 실패", "aggregated")
+                        # 청산 실패 시 half_exit 상태 변경하지 않음
+                        return
+                except Exception as e:
+                    print(f"[PARTIAL TP] {symbol} 절반 물량 청산 오류: {e}")
+                    send_discord_debug(f"[PARTIAL TP] {symbol} 절반 물량 청산 오류: {e}", "aggregated")
+                    return
+                
                 send_discord_debug(f"[DEBUG] {symbol} SHORT 1차 익절 완료", "aggregated")
                 pos["half_exit"] = True
 
