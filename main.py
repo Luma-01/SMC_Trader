@@ -36,6 +36,7 @@ from core.position import PositionManager
 from core.monitor import maybe_send_weekly_report
 from core.ob import detect_ob
 from core.confirmation import confirm_ltf_reversal   # ← 추가
+from core.liquidity import detect_equal_levels, get_nearest_liquidity_level, is_liquidity_sweep  # ← 추가
 # 〃 무효-블록 유틸 가져오기
 from core.iof import is_invalidated, mark_invalidated
 # ────────────── 모드별 import ──────────────
@@ -208,16 +209,35 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         #
         # pattern(=구조 종류)이 'fvg' 이면 건너뛰고,
         # 그렇지 않은 블록(OB, BB 등)만 진입 근거로 사용한다.
-        for ob in reversed(detect_ob(ltf)):
-            # ① FVG 는 건너뜀
+        # OB 리스트를 기관성 점수 기준으로 정렬
+        ltf_obs = detect_ob(ltf)
+        ltf_obs_sorted = sorted(ltf_obs, key=lambda x: x.get('institutional_score', 0), reverse=True)
+        
+        for ob in ltf_obs_sorted:
+            # ① FVG 조건부 허용 (HTF 확인 시에만)
             if ob.get("pattern") == "fvg":
-                continue
+                # HTF에서 강한 구조 확인 시에만 FVG 허용
+                htf_structure = detect_structure(htf)
+                recent_structure = htf_structure['structure'].dropna().tail(3)
+                
+                strong_structure_signals = ['BOS_up', 'BOS_down', 'CHoCH_up', 'CHoCH_down']
+                has_strong_htf_confirmation = any(signal in recent_structure.values for signal in strong_structure_signals)
+                
+                if not has_strong_htf_confirmation:
+                    print(f"[FVG] {symbol} FVG 스킵 - HTF 구조 확인 부족")
+                    continue
+                else:
+                    print(f"[FVG] {symbol} FVG 허용 - HTF 구조 확인됨")
 
             # ② 이미 무효화된 OB/BB 면 스킵
             if is_invalidated(symbol, "ob", htf_tf, ob["high"], ob["low"]):
                 continue
 
-            if ob["type"].lower() == direction:     # 방향 일치하는 마지막 블록
+            if ob["type"].lower() == direction:     # 방향 일치하는 블록
+                # 기관성 점수가 높은 OB 우선 선택
+                institutional_score = ob.get('institutional_score', 0)
+                if institutional_score >= 1:
+                    print(f"[OB] {symbol} 기관성 OB 선택 (점수: {institutional_score})")
                 zone = ob
                 break
         entry_dec = Decimal(str(entry))
@@ -295,22 +315,36 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             sl_dec = (sl_dec - adj) if direction == "long" else (sl_dec + adj)
             sl_dec = sl_dec.quantize(tick_size)
 
-        # ── 4) HTF 반대 OB extreme에 TP 설정 ─────────────────────
+        # ── 4) 유동성 레벨 기반 TP 설정 (우선순위: 유동성 > 반대 OB > RR) ─────────────────────
         tp_dec = None
-        htf_ob = detect_ob(htf)      # htf = HTF DataFrame, 위에서 이미 attrs 세팅됨
-        # direction에 따라 opposite OB
-        if direction == "long":
-            # 가장 가까운 위쪽 bearish OB의 low
-            candidates = [Decimal(str(z["low"])) for z in htf_ob if z["type"] == "bearish" and Decimal(str(z["low"])) > entry_dec]
-            if candidates:
-                tp_dec = min(candidates)
-        else:
-            # 가장 가까운 아래 bullish OB의 high
-            candidates = [Decimal(str(z["high"])) for z in htf_ob if z["type"] == "bullish" and Decimal(str(z["high"])) < entry_dec]
-            if candidates:
-                tp_dec = max(candidates)
+        
+        # 4-1) 유동성 레벨 기반 TP 설정
+        try:
+            htf_liquidity_levels = detect_equal_levels(htf)
+            nearest_liquidity = get_nearest_liquidity_level(htf_liquidity_levels, entry, direction)
+            
+            if nearest_liquidity:
+                tp_dec = Decimal(str(nearest_liquidity['price'])).quantize(tick_size)
+                print(f"[TP] {symbol} 유동성 레벨 기반 TP: {float(tp_dec):.5f} (강도: {nearest_liquidity['strength']})")
+        except Exception as e:
+            print(f"[TP] {symbol} 유동성 분석 실패: {e}")
+        
+        # 4-2) fallback: HTF 반대 OB extreme에 TP 설정
+        if tp_dec is None:
+            htf_ob = detect_ob(htf)      # htf = HTF DataFrame, 위에서 이미 attrs 세팅됨
+            # direction에 따라 opposite OB
+            if direction == "long":
+                # 가장 가까운 위쪽 bearish OB의 low
+                candidates = [Decimal(str(z["low"])) for z in htf_ob if z["type"] == "bearish" and Decimal(str(z["low"])) > entry_dec]
+                if candidates:
+                    tp_dec = min(candidates)
+            else:
+                # 가장 가까운 아래 bullish OB의 high
+                candidates = [Decimal(str(z["high"])) for z in htf_ob if z["type"] == "bullish" and Decimal(str(z["high"])) < entry_dec]
+                if candidates:
+                    tp_dec = max(candidates)
 
-        # fallback: 기존 RR TP
+        # 4-3) fallback: 기존 RR TP
         if tp_dec is None:
             rr_dec = Decimal(str(RR))
             if direction == "long":
@@ -322,10 +356,43 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
         sl, tp = float(sl_dec), float(tp_dec)
 
+        # ── 5) 유동성 사냥 후 진입 확인 ─────────────────────
+        liquidity_sweep_confirmed = False
+        try:
+            ltf_liquidity_levels = detect_equal_levels(ltf)
+            
+            # 진입 방향에 따른 유동성 사냥 확인
+            if direction == "long":
+                # LONG 진입: 하락 방향 유동성 사냥 후 반전 확인
+                for level in ltf_liquidity_levels:
+                    if level['type'] == 'sell_side_liquidity' and level['price'] < entry:
+                        if is_liquidity_sweep(ltf, level['price'], 'down'):
+                            liquidity_sweep_confirmed = True
+                            print(f"[LIQUIDITY] {symbol} LONG 진입 - SSL 사냥 감지 @ {level['price']:.5f}")
+                            break
+            else:
+                # SHORT 진입: 상승 방향 유동성 사냥 후 반전 확인
+                for level in ltf_liquidity_levels:
+                    if level['type'] == 'buy_side_liquidity' and level['price'] > entry:
+                        if is_liquidity_sweep(ltf, level['price'], 'up'):
+                            liquidity_sweep_confirmed = True
+                            print(f"[LIQUIDITY] {symbol} SHORT 진입 - BSL 사냥 감지 @ {level['price']:.5f}")
+                            break
+            
+            # 유동성 사냥이 없으면 진입 보류 (선택적)
+            if not liquidity_sweep_confirmed:
+                print(f"[LIQUIDITY] {symbol} 유동성 사냥 미확인 - 진입 보류")
+                # return  # 주석 처리 - 점진적 적용을 위해
+        except Exception as e:
+            print(f"[LIQUIDITY] {symbol} 유동성 사냥 확인 실패: {e}")
+            # 오류 시 기존 로직 유지
+            pass
+        
         # ───────── 디버그 출력 위치 ─────────
         print(f"[DEBUG][SL-CALC] {symbol} "
               f"trg={trg_zone} zone={zone} "
-              f"entry={entry:.4f} sl={sl:.4f} tp={tp:.4f}")
+              f"entry={entry:.4f} sl={sl:.4f} tp={tp:.4f} "
+              f"liquidity_sweep={liquidity_sweep_confirmed}")
         
         order_ok = False
         if is_gate:

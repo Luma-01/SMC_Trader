@@ -25,11 +25,28 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
             width = high - low
             if width < min_width:
                 continue
+            
+            # 기관성 FVG 점수 계산
+            avg_range = df["high"].iloc[max(0, i-10):i+1].sub(df["low"].iloc[max(0, i-10):i+1]).mean()
+            institutional_score = 0
+            
+            # 큰 FVG 크기 (평균 범위의 50% 이상)
+            if float(width) > avg_range * 0.5:
+                institutional_score += 1
+            
+            # 볼륨 확인 (있을 때만)
+            if 'volume' in df.columns:
+                vol_avg = df['volume'].iloc[max(0, i-10):i+1].mean()
+                if df['volume'].iloc[i-1] > vol_avg * 1.3:  # 높은 볼륨
+                    institutional_score += 1
+            
             fvg_zones.append({
                 "type": "bullish",
                 "low": float(low),
                 "high": float(high),
-                "time": df["time"].iloc[i]
+                "time": df["time"].iloc[i],
+                "institutional_score": institutional_score,
+                "pattern": "fvg"
             })
 
         # 하락 FVG
@@ -39,11 +56,28 @@ def detect_fvg(df: pd.DataFrame) -> List[Dict]:
             width = high - low
             if width < min_width:
                 continue
+            
+            # 기관성 FVG 점수 계산
+            avg_range = df["high"].iloc[max(0, i-10):i+1].sub(df["low"].iloc[max(0, i-10):i+1]).mean()
+            institutional_score = 0
+            
+            # 큰 FVG 크기 (평균 범위의 50% 이상)
+            if float(width) > avg_range * 0.5:
+                institutional_score += 1
+            
+            # 볼륨 확인 (있을 때만)
+            if 'volume' in df.columns:
+                vol_avg = df['volume'].iloc[max(0, i-10):i+1].mean()
+                if df['volume'].iloc[i-1] > vol_avg * 1.3:  # 높은 볼륨
+                    institutional_score += 1
+            
             fvg_zones.append({
                 "type": "bearish",
                 "low": float(low),
                 "high": float(high),
-                "time": df["time"].iloc[i]
+                "time": df["time"].iloc[i],
+                "institutional_score": institutional_score,
+                "pattern": "fvg"
             })
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
