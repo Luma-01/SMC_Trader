@@ -42,11 +42,32 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
                 and c2["high"] > c_next["high"]             # 이후 봉 고점↓
                 and c_next["close"] < c_next["open"]        # 하락 마감
             ):
+                # SMC 품질 점수 계산
+                displacement = abs(c_next["close"] - c2["close"])
+                avg_range = df["high"].iloc[max(0, i-10):i+1].sub(df["low"].iloc[max(0, i-10):i+1]).mean()
+                
+                # 볼륨 비율 계산 (볼륨 데이터가 있을 때만)
+                volume_ratio = 1.0
+                if 'volume' in df.columns and not pd.isna(df['volume'].iloc[i-1]):
+                    vol_avg = df['volume'].iloc[max(0, i-10):i+1].mean()
+                    volume_ratio = df['volume'].iloc[i-1] / vol_avg if vol_avg > 0 else 1.0
+                
+                # 기관성 OB 판단 점수
+                institutional_score = 0
+                if displacement > avg_range * 1.2:  # 큰 displacement
+                    institutional_score += 1
+                if volume_ratio > 1.5:  # 높은 볼륨
+                    institutional_score += 1
+                
                 ob_zones.append({
                     "type": "bearish",
                     "high": float(high2),
                     "low": float(low2),
-                    "time": c2['time']
+                    "time": c2['time'],
+                    "displacement": displacement,
+                    "volume_ratio": volume_ratio,
+                    "institutional_score": institutional_score,
+                    "pattern": "ob"
                 })
                 break
 
@@ -56,11 +77,32 @@ def detect_ob(df: pd.DataFrame) -> List[Dict]:
                 and c2["low"] < c_next["low"]
                 and c_next["close"] > c_next["open"]
             ):
+                # SMC 품질 점수 계산
+                displacement = abs(c_next["close"] - c2["close"])
+                avg_range = df["high"].iloc[max(0, i-10):i+1].sub(df["low"].iloc[max(0, i-10):i+1]).mean()
+                
+                # 볼륨 비율 계산 (볼륨 데이터가 있을 때만)
+                volume_ratio = 1.0
+                if 'volume' in df.columns and not pd.isna(df['volume'].iloc[i-1]):
+                    vol_avg = df['volume'].iloc[max(0, i-10):i+1].mean()
+                    volume_ratio = df['volume'].iloc[i-1] / vol_avg if vol_avg > 0 else 1.0
+                
+                # 기관성 OB 판단 점수
+                institutional_score = 0
+                if displacement > avg_range * 1.2:  # 큰 displacement
+                    institutional_score += 1
+                if volume_ratio > 1.5:  # 높은 볼륨
+                    institutional_score += 1
+                
                 ob_zones.append({
                     "type": "bullish",
                     "high": float(high2),
                     "low": float(low2),
-                    "time": c2['time']
+                    "time": c2['time'],
+                    "displacement": displacement,
+                    "volume_ratio": volume_ratio,
+                    "institutional_score": institutional_score,
+                    "pattern": "ob"
                 })
                 break
     # ───────────────────────────────────────────
