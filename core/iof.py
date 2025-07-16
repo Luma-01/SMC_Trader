@@ -185,8 +185,8 @@ def is_iof_entry(
     # ──────────────────────────────────────────────────────────
     if IN_HTF_ZONE:
         # HTF 존에 있는 경우에만 프리미엄&디스카운트 필터 적용
-        filter_passed, filter_msg, mid_price, ote_low, ote_high = refined_premium_discount_filter(
-            htf_df, ltf_df, direction, window=20
+        filter_passed, filter_msg, mid_price, htf_low, htf_high = refined_premium_discount_filter(
+            htf_df, ltf_df, direction, window=50
         )
         
         if not filter_passed:
@@ -194,7 +194,7 @@ def is_iof_entry(
             send_discord_debug(f"[PREMIUM_DISCOUNT] ❌ {filter_msg}", "aggregated")
             return False, direction, None
         else:
-            print(f"[PREMIUM_DISCOUNT] ✅ {filter_msg} (mid: {mid_price:.4f}, OTE: {ote_low:.4f}~{ote_high:.4f})")
+            print(f"[PREMIUM_DISCOUNT] ✅ {filter_msg} (mid: {mid_price:.4f}, HTF: {htf_low:.4f}~{htf_high:.4f})")
             send_discord_debug(f"[PREMIUM_DISCOUNT] ✅ 필터 통과 (mid: {mid_price:.4f})", "aggregated")
 
     # ──────────────────────────────────────────────────────────
