@@ -35,6 +35,8 @@ class PositionManager:
         self.positions: Dict[str, Dict] = {}
         # ▸ 마지막 종료 시각 저장  {symbol: epoch sec}
         self._cooldowns: Dict[str, float] = {}
+        # ▸ 스탑로스 알림 중복 방지 {symbol: epoch sec}
+        self._sl_alerts: Dict[str, float] = {}
 
         # 🔸 WS 시작 직후 거래소-실시간과 동기화
         self.sync_from_exchange()
@@ -546,14 +548,42 @@ class PositionManager:
 
         # 내부 종료(Stop-loss) 판정 – 틱 버퍼 1 tick
         if direction == 'long' and mark_price <= sl - tick * SAFETY_TICKS:
-            print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
-            send_discord_message(f"[STOP LOSS] {symbol} LONG @ {mark_price:.2f}", "aggregated")
-            self.close(symbol)
+            # 실제 포지션이 존재하는지 먼저 확인
+            live = get_open_position(symbol)
+            if live and abs(live.get("entry", 0)) > 0:
+                # 스탑로스 알림 중복 방지 체크 (30초 간격)
+                now = time.time()
+                last_alert = self._sl_alerts.get(symbol, 0)
+                if now - last_alert > 30:  # 30초마다 최대 1번 알림
+                    print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
+                    send_discord_message(f"[STOP LOSS] {symbol} LONG @ {mark_price:.2f}", "aggregated")
+                    self._sl_alerts[symbol] = now
+                self.close(symbol)
+            else:
+                print(f"[DEBUG] {symbol} 스탑로스 조건 충족하지만 포지션 없음 - 캐시 정리")
+                self.positions.pop(symbol, None)
+                self._cooldowns[symbol] = time.time()
+                # 스탑로스 알림 상태도 정리
+                self._sl_alerts.pop(symbol, None)
 
         elif direction == 'short' and mark_price >= sl + tick * SAFETY_TICKS:
-            print(f"[STOP LOSS] {symbol} SHORT @ mark_price={mark_price:.2f}")
-            send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {mark_price:.2f}", "aggregated")
-            self.close(symbol)
+            # 실제 포지션이 존재하는지 먼저 확인
+            live = get_open_position(symbol)
+            if live and abs(live.get("entry", 0)) > 0:
+                # 스탑로스 알림 중복 방지 체크 (30초 간격)
+                now = time.time()
+                last_alert = self._sl_alerts.get(symbol, 0)
+                if now - last_alert > 30:  # 30초마다 최대 1번 알림
+                    print(f"[STOP LOSS] {symbol} SHORT @ mark_price={mark_price:.2f}")
+                    send_discord_message(f"[STOP LOSS] {symbol} SHORT @ {mark_price:.2f}", "aggregated")
+                    self._sl_alerts[symbol] = now
+                self.close(symbol)
+            else:
+                print(f"[DEBUG] {symbol} 스탑로스 조건 충족하지만 포지션 없음 - 캐시 정리")
+                self.positions.pop(symbol, None)
+                self._cooldowns[symbol] = time.time()
+                # 스탑로스 알림 상태도 정리
+                self._sl_alerts.pop(symbol, None)
 
         # 절반 익절 이후 보호선 이탈 체크
         elif half_exit and protective:
@@ -620,6 +650,8 @@ class PositionManager:
 
         # ▸ 쿨-다운 시작
         self._cooldowns[symbol] = time.time()
+        # ▸ 스탑로스 알림 상태 정리
+        self._sl_alerts.pop(symbol, None)
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
         self.positions[symbol] = {
