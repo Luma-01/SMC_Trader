@@ -313,10 +313,9 @@ def place_order_with_tp_sl(
                 send_discord_debug(f"[CRITICAL] {symbol} SL 주문 재시도 실패 - 수동 확인 필요!", "binance")
                 raise Exception(f"SL 주문 생성 실패: {sl_e2}")
 
+        # 간단한 진입 알림만 전송 (상세 정보는 main.py에서 처리)
         print(f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp_str}, SL:{sl_str}")
-        send_discord_message(
-            f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp_str}, SL:{sl_str}", "binance"
-        )
+        # send_discord_message는 main.py에서 상세 정보와 함께 전송
         return True
 
     except Exception as e:

@@ -21,6 +21,8 @@ from config.settings import (
     SYMBOLS_GATE,
     RR,
     SL_BUFFER,
+    MIN_TP_DISTANCE_PCT,
+    MIN_SL_DISTANCE_PCT,
     DEFAULT_LEVERAGE,
     ENABLE_GATE,
     ENABLE_BINANCE,
@@ -65,7 +67,7 @@ if ENABLE_GATE:
 
 ##########################################################################
 #  콘솔 도배 방지용 dedup-print
-#  ■ '[OB][' 또는 '[BB][' 로 시작하고 'NEW' 가 없는 “요약” 라인은
+#  ■ '[OB][' 또는 '[BB][' 로 시작하고 'NEW' 가 없는 "요약" 라인은
 #    이미 한 번 찍혔으면 다시 출력하지 않는다
 #  ■ 나머지 메시지(NEW, 구조, 진입/청산, 에러 등)는 그대로 출력
 ##########################################################################
@@ -108,7 +110,8 @@ if not DEDUP_OFF and not hasattr(builtins, "__orig_print__"):
 MIN_SL_TICKS = 5
 
 load_dotenv()
-pm = PositionManager()
+from core.position import PositionManagerExtended
+pm = PositionManagerExtended()
 import core.data_feed as df
 df.set_pm(pm)          # ← 순환 import 없이 pm 전달
 
@@ -123,7 +126,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
 
     # 표준 키/거래소 구분
     is_gate  = is_gate_sym(symbol)
-    # Binance REST 는 ‘BTCUSDT’, Gate 는 원형 유지
+    # Binance REST 는 'BTCUSDT', Gate 는 원형 유지
     base_sym = to_binance(symbol) if not is_gate else symbol
 
     # ───────── 중복 진입 방지 (내부 + 실시간) ─────────
@@ -242,8 +245,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 break
         entry_dec = Decimal(str(entry))
 
-        # ── 공통 버퍼 계산 ──────────────────────────────────────────
-        # (1) **기본 버퍼** : 환경 상수 × tick
+        # ── 공통 버퍼 계산 ────────
+        # (1) **기본 버퍼** : 환경 상수 × tick
         base_buf = tick_size * Decimal(str(SL_BUFFER))
 
         # (2) **동적 버퍼** : HTF 트리거-존(또는 최근 OB) 폭의 10 %
@@ -263,7 +266,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         else:
             buf_dec = base_buf
 
-        # ── 1) ‘트리거 Zone’ 이탈 기준 SL ──
+        # ── 1) '트리거 Zone' 이탈 기준 SL ──
         if trg_zone is not None:
             if direction == "long":
                 sl_dec = (Decimal(str(trg_zone["low"])) - buf_dec).quantize(tick_size)
@@ -278,42 +281,24 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 sl_dec = (Decimal(str(zone["high"])) + buf_dec).quantize(tick_size)
         # ── 2) fallback: 직전 캔들 extreme ──────────────────────────
         else:
+            # 직전 캔들 extreme
             if direction == "long":
-                extreme = Decimal(str(ltf["low"].iloc[-2])).quantize(tick_size)
-                sl_dec = (extreme - buf_dec).quantize(tick_size)
+                sl_dec = (Decimal(str(ltf["low"].iloc[-1])) - buf_dec).quantize(tick_size)
             else:
-                extreme = Decimal(str(ltf["high"].iloc[-2])).quantize(tick_size)
-                sl_dec = (extreme + buf_dec).quantize(tick_size)
+                sl_dec = (Decimal(str(ltf["high"].iloc[-1])) + buf_dec).quantize(tick_size)
 
-        # ── 3) 방향-무결성(SL이 Risk 쪽) 검사  ────────────────────
-        #    ↳ 조건이 맞지 않으면 fallback extreme 로 강제 교체
-        if direction == "long" and sl_dec >= entry_dec:
-            extreme = Decimal(str(ltf["low"].iloc[-2])).quantize(tick_size)
-            sl_dec  = (extreme - buf_dec).quantize(tick_size)
-        elif direction == "short" and sl_dec <= entry_dec:
-            extreme = Decimal(str(ltf["high"].iloc[-2])).quantize(tick_size)
-            sl_dec  = (extreme + buf_dec).quantize(tick_size)
+        # ── 3) SL 최소 거리 검증 ────────────────────────────────
+        entry_dec = Decimal(str(entry))
+        risk_ratio = abs(entry_dec - sl_dec) / entry_dec
+        min_rr = Decimal(str(MIN_SL_DISTANCE_PCT)) # 설정값 사용
 
-        # --- ⚠️ 신규 : SL-Entry 가 같은 Tick(=0 간격) 이면 1-tick 띄우기
-        if abs(entry_dec - sl_dec) < tick_size:
-            sl_dec = sl_dec - tick_size if direction == "long" else sl_dec + tick_size
-        
-        # ── 4) 최소 SL 간격 보정 (전역 MIN_SL_TICKS 사용) ───────────
-        # --- 최소 SL 거리 확보 ------------------------------------
-        min_gap = tick_size * MIN_SL_TICKS
-        if abs(entry_dec - sl_dec) < min_gap:
-            adj = min_gap - abs(entry_dec - sl_dec)
-            sl_dec = (sl_dec + adj) if direction == "short" else (sl_dec - adj)
-            sl_dec = sl_dec.quantize(tick_size)
-
-        # ── 5) **리스크-가드** : 엔트리-SL 간격이 1 % 미만이면 강제 확대 ───
-        min_rr = Decimal("0.01")            # 1 %
-        risk_ratio = (abs(entry_dec - sl_dec) / entry_dec).quantize(Decimal("0.00000001"))
+        # 최소 거리 미달 시 확대
         if risk_ratio < min_rr:
-            # `adj` 도 Decimal 로 맞추면 바로 `.quantize()` 가능
+            # 필요한 조정량을 Decimal 로 맞추면 바로 `.quantize()` 가능
             adj = (min_rr * entry_dec - abs(entry_dec - sl_dec)).quantize(tick_size)
             sl_dec = (sl_dec - adj) if direction == "long" else (sl_dec + adj)
             sl_dec = sl_dec.quantize(tick_size)
+            print(f"[SL] {symbol} SL 최소 거리 확대: {float(risk_ratio*100):.2f}% → {float(min_rr*100):.2f}%")
 
         # ── 4) 유동성 레벨 기반 TP 설정 (우선순위: 유동성 > 반대 OB > RR) ─────────────────────
         tp_dec = None
@@ -324,8 +309,22 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             nearest_liquidity = get_nearest_liquidity_level(htf_liquidity_levels, entry, direction)
             
             if nearest_liquidity:
-                tp_dec = Decimal(str(nearest_liquidity['price'])).quantize(tick_size)
-                print(f"[TP] {symbol} 유동성 레벨 기반 TP: {float(tp_dec):.5f} (강도: {nearest_liquidity['strength']})")
+                liquidity_tp = Decimal(str(nearest_liquidity['price'])).quantize(tick_size)
+                
+                # 최소 TP 거리 검증 (진입가 대비 최소 1% 이상)
+                min_tp_distance = entry_dec * Decimal(str(MIN_TP_DISTANCE_PCT))
+                if direction == "long":
+                    if liquidity_tp - entry_dec >= min_tp_distance:
+                        tp_dec = liquidity_tp
+                        print(f"[TP] {symbol} 유동성 레벨 기반 TP: {float(tp_dec):.5f} (강도: {nearest_liquidity['strength']})")
+                    else:
+                        print(f"[TP] {symbol} 유동성 TP 너무 가까움 - 최소 거리 미달: {float(liquidity_tp):.5f} (필요: {float(entry_dec + min_tp_distance):.5f})")
+                else:  # short
+                    if entry_dec - liquidity_tp >= min_tp_distance:
+                        tp_dec = liquidity_tp
+                        print(f"[TP] {symbol} 유동성 레벨 기반 TP: {float(tp_dec):.5f} (강도: {nearest_liquidity['strength']})")
+                    else:
+                        print(f"[TP] {symbol} 유동성 TP 너무 가까움 - 최소 거리 미달: {float(liquidity_tp):.5f} (필요: {float(entry_dec - min_tp_distance):.5f})")
         except Exception as e:
             print(f"[TP] {symbol} 유동성 분석 실패: {e}")
         
@@ -337,24 +336,40 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 # 가장 가까운 위쪽 bearish OB의 low
                 candidates = [Decimal(str(z["low"])) for z in htf_ob if z["type"] == "bearish" and Decimal(str(z["low"])) > entry_dec]
                 if candidates:
-                    tp_dec = min(candidates)
+                    ob_tp = min(candidates)
+                    # 최소 거리 검증
+                    if ob_tp - entry_dec >= entry_dec * Decimal(str(MIN_TP_DISTANCE_PCT)):
+                        tp_dec = ob_tp
+                        print(f"[TP] {symbol} HTF 반대 OB 기반 TP: {float(tp_dec):.5f}")
+                    else:
+                        print(f"[TP] {symbol} HTF OB TP 너무 가까움 - 최소 거리 미달: {float(ob_tp):.5f}")
             else:
                 # 가장 가까운 아래 bullish OB의 high
                 candidates = [Decimal(str(z["high"])) for z in htf_ob if z["type"] == "bullish" and Decimal(str(z["high"])) < entry_dec]
                 if candidates:
-                    tp_dec = max(candidates)
+                    ob_tp = max(candidates)
+                    # 최소 거리 검증
+                    if entry_dec - ob_tp >= entry_dec * Decimal(str(MIN_TP_DISTANCE_PCT)):
+                        tp_dec = ob_tp
+                        print(f"[TP] {symbol} HTF 반대 OB 기반 TP: {float(tp_dec):.5f}")
+                    else:
+                        print(f"[TP] {symbol} HTF OB TP 너무 가까움 - 최소 거리 미달: {float(ob_tp):.5f}")
 
-        # 4-3) fallback: 기존 RR TP
+        # 4-3) fallback: 기존 RR TP (최소 거리 보장)
         if tp_dec is None:
             rr_dec = Decimal(str(RR))
             if direction == "long":
                 tp_dec = (entry_dec + (entry_dec - sl_dec) * rr_dec).quantize(tick_size)
             else:
                 tp_dec = (entry_dec - (sl_dec - entry_dec) * rr_dec).quantize(tick_size)
+            print(f"[TP] {symbol} RR 기반 TP: {float(tp_dec):.5f} (RR: {float(rr_dec)})")
         else:
             tp_dec = tp_dec.quantize(tick_size)
 
-        sl, tp = float(sl_dec), float(tp_dec)
+        # ★ SL은 pm.enter()에서 개선된 로직으로 계산하도록 변경
+        # 기존 SL 계산 결과는 참고용으로만 사용
+        calculated_sl = float(sl_dec)
+        tp = float(tp_dec)
 
         # ── 5) 유동성 사냥 후 진입 확인 ─────────────────────
         liquidity_sweep_confirmed = False
@@ -379,10 +394,10 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                             print(f"[LIQUIDITY] {symbol} SHORT 진입 - BSL 사냥 감지 @ {level['price']:.5f}")
                             break
             
-            # 유동성 사냥이 없으면 진입 보류 (선택적)
+            # 유동성 사냥이 없으면 진입 보류
             if not liquidity_sweep_confirmed:
                 print(f"[LIQUIDITY] {symbol} 유동성 사냥 미확인 - 진입 보류")
-                # return  # 주석 처리 - 점진적 적용을 위해
+                return  # 유동성 사냥 확인 필수
         except Exception as e:
             print(f"[LIQUIDITY] {symbol} 유동성 사냥 확인 실패: {e}")
             # 오류 시 기존 로직 유지
@@ -391,7 +406,7 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
         # ───────── 디버그 출력 위치 ─────────
         print(f"[DEBUG][SL-CALC] {symbol} "
               f"trg={trg_zone} zone={zone} "
-              f"entry={entry:.4f} sl={sl:.4f} tp={tp:.4f} "
+              f"entry={entry:.4f} calculated_sl={calculated_sl:.4f} tp={tp:.4f} "
               f"liquidity_sweep={liquidity_sweep_confirmed}")
         
         order_ok = False
@@ -402,13 +417,14 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             
             if qty <= 0:
                 return
+            # Gate에서는 기존 계산된 SL 사용 (거래소 주문용)
             order_ok = gate_order_with_tp_sl(
                 symbol,
                 "buy" if direction == "long" else "sell",
-                qty, tp, sl, leverage
+                qty, tp, calculated_sl, leverage
             )
         else:
-            # ⚠️  진입 비중 = “총 잔고 10 %”
+            # ⚠️  진입 비중 = "총 잔고 10 %"
             qty = calculate_quantity(
                 symbol,
                 entry,
@@ -417,43 +433,86 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
             )
             if qty <= 0:
                 return
+            # Binance에서는 기존 계산된 SL 사용 (거래소 주문용)
             order_ok = binance_order_with_tp_sl(
                 symbol,
                 "buy" if direction == "long" else "sell",
-                qty, tp, sl            # <-- hedge 파라미터 제거
+                qty, tp, calculated_sl            # <-- hedge 파라미터 제거
             )
 
         if order_ok:
-            # pm.enter() 내부에서 SL 주문까지 생성하므로
-            # 중복 update_stop_loss() 호출을 제거합니다
-            # ─ basis 항상 생성: trg_zone > zone > fallback
-            if trg_zone is not None:
-                basis = (
-                    f"{trg_zone['kind'].upper()} "
-                    f"{trg_zone['low']}~{trg_zone['high']}"
+            try:
+                # ───────── 상세 진입근거 구성 ─────────
+                entry_reason = []
+                
+                # 1. 기본 진입 근거
+                if trg_zone is not None:
+                    basis = (
+                        f"{trg_zone['kind'].upper()} "
+                        f"{trg_zone['low']}~{trg_zone['high']}"
+                    )
+                    entry_reason.append(f"진입근거: {basis}")
+                elif zone is not None:
+                    basis = (
+                        f"{zone.get('pattern','ZONE').upper()} "
+                        f"{zone['low']}~{zone['high']}"
+                    )
+                    entry_reason.append(f"진입근거: {basis}")
+                else:
+                    basis = f"NO_BLOCK zone=None"
+                    entry_reason.append(f"진입근거: {basis}")
+                
+                # 2. SL 설정 근거
+                if trg_zone is not None:
+                    entry_reason.append(f"SL근거: 트리거존 {trg_zone['kind'].upper()} 하단 + 버퍼")
+                elif zone is not None:
+                    entry_reason.append(f"SL근거: {zone.get('pattern','ZONE').upper()} 하단 + 버퍼")
+                else:
+                    entry_reason.append("SL근거: 직전 캔들 extreme + 버퍼")
+                
+                # 3. TP 설정 근거
+                if tp_dec is not None:
+                    tp_method = "유동성레벨" if nearest_liquidity else "HTF반대OB" if tp_dec != (entry_dec + (entry_dec - sl_dec) * Decimal(str(RR))).quantize(tick_size) else "RR기반"
+                    entry_reason.append(f"TP근거: {tp_method} (거리: {abs(float(tp_dec) - entry):.3f})")
+                
+                # 4. 구조 확인
+                if htf_struct is not None and 'structure' in htf_struct.columns:
+                    recent_structure = htf_struct['structure'].dropna().tail(3)
+                    if len(recent_structure) > 0:
+                        last_structure = recent_structure.iloc[-1]
+                        entry_reason.append(f"HTF구조: {last_structure}")
+                
+                # 5. 유동성 사냥 확인
+                if liquidity_sweep_confirmed:
+                    entry_reason.append("유동성사냥: 확인됨")
+                else:
+                    entry_reason.append("유동성사냥: 미확인")
+                
+                # 상세 근거를 문자열로 결합
+                detailed_basis = " | ".join(entry_reason)
+                
+                # MSS-only 진입이면 trg_zone 안에 보호선이 같이 들어옴
+                prot_lv = trg_zone.get("protective") if isinstance(trg_zone, dict) else None
+                
+                # ★ 개선된 pm.enter() 호출 - HTF 데이터와 trigger_zone 전달
+                pm.enter(
+                    symbol=symbol,
+                    direction=direction,
+                    entry=entry,
+                    sl=None,  # SL은 pm.enter()에서 개선된 로직으로 계산
+                    tp=tp,
+                    basis=detailed_basis,
+                    protective=prot_lv,
+                    htf_df=htf,          # ★ HTF 데이터 전달
+                    trigger_zone=trg_zone  # ★ 진입근거 존 정보 전달
                 )
-            elif zone is not None:
-                basis = (
-                    f"{zone.get('pattern','ZONE').upper()} "
-                    f"{zone['low']}~{zone['high']}"
-                )
-            else:
-                # fallback: 직전 캔들 extreme, 등
-                basis = f"NO_BLOCK zone=None"
-            # MSS-only 진입이면 trg_zone 안에 보호선이 같이 들어옴
-            prot_lv = trg_zone.get("protective") if isinstance(trg_zone, dict) else None
-            pm.enter(
-                symbol,
-                direction,
-                entry,
-                sl,
-                tp,
-                basis=basis,
-                protective=prot_lv,
-            )
+            except Exception as e:
+                print(f"[ERROR] 포지션 등록 실패: {symbol} → {e}")
+                # 오류 발생 시 디스코드 알림
+                send_discord_message(f"❌ [ERROR] {symbol} 포지션 등록 실패: {e}", "aggregated")
         else:
-            print(f"[WARN] 주문 실패로 포지션 등록 건너뜀 | {symbol}")
-            send_discord_debug(f"[WARN] 주문 실패 → 포지션 미등록 | {symbol}", "aggregated")
+            print(f"❌ [ORDER] {symbol} 주문 실패")
+            send_discord_message(f"❌ [ORDER] {symbol} 주문 실패", "aggregated")
         pm.update_price(symbol, entry, ltf_df=ltf)      # MSS 보호선 갱신
 
         # ───────── 블록 무효화 감시 ─────────
@@ -472,8 +531,8 @@ async def handle_pair(symbol: str, meta: dict, htf_tf: str, ltf_tf: str):
                 mark_invalidated(symbol, "ob", htf_tf, hi, lo)
 
     except Exception as e:
-        print(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
-        #send_discord_debug(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
+        print(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}")
+        send_discord_debug(f"[ERROR] {symbol} {htf_tf}/{ltf_tf} → {e}", "aggregated")
 
 def calculate_sl_tp(entry: float, direction: str, buffer: float, rr: float):
     """fallback-용 단순 SL/TP 계산 (entry ± buffer %, RR 고정)"""

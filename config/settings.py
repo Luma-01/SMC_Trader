@@ -85,6 +85,10 @@ HTF_PREMIUM_DISCOUNT_WINDOW = 20  # HTF 캔들 윈도우 개수
 # ▶ Risk-Reward 1 : 1.5  (2025-07-04 조정)
 RR = 1.5
 SL_BUFFER = 0.005
+# ▶ TP 최소 거리 설정 (진입가 대비 최소 1% 이상)
+MIN_TP_DISTANCE_PCT = 0.01  # 1% 최소 거리
+# ▶ SL 최소 거리 설정 (진입가 대비 최소 2% 이상)
+MIN_SL_DISTANCE_PCT = 0.01  # 2% 최소 거리
 CANDLE_LIMIT = 1500
 DEFAULT_LEVERAGE = 20
 CUSTOM_LEVERAGES = {}

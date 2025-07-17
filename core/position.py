@@ -130,7 +130,7 @@ class PositionManager:
     def has_position(self, symbol: str) -> bool:
         return symbol in self.positions
 
-    # basis: “OB 2800~2850”, “BB_HTF 1.25~1.30” … 등 진입 근거 문자열
+    # basis: "OB 2800~2850", "BB_HTF 1.25~1.30" … 등 진입 근거 문자열
     def enter(
         self,
         symbol: str,
@@ -140,47 +140,78 @@ class PositionManager:
         tp: float | None = None,
         basis: dict | str | None = None,   # ← dict 도 허용
         protective: float | None = None,   # ★ NEW
+        htf_df: pd.DataFrame | None = None,  # ★ HTF 데이터 추가
+        trigger_zone: dict | None = None,    # ★ 진입근거 존 정보 추가
     ):
-        """포지션 등록 + 최소 리스크 보정
+        """포지션 등록 + 개선된 SL 산출
 
-        * 바이낸스 저가코인·소수점 자릿수 이슈로 SL이 *entry와 동일*하게
-          계산되는 버그를 막는다.
+        * SMC 전략의 구조적 무효화 원칙에 따른 SL 산출
+        * 우선순위: 진입근거 존 → HTF 구조적 무효화 → 보호선 → 최소 거리
         * 진입 직후 수 초 안에 트레일링 SL 이 갱신‑체결되는 현상을 막기 위해
           `created_at` 타임스탬프를 저장한다.
         """
         basis_txt = f" | {basis}" if basis else " | NO_BASIS"
         
-        # ─── ① SL 기본값 결정 ─────────────────────────
+        # ─── ① 개선된 SL 산출 로직 ─────────────────────────
         if sl is None:
-            # ①-A MSS-only protective 가 있으면 그대로
-            if protective is not None:
-                sl = protective
-            else:
-                # ①-B 최후 폴백 = 1 % 리스크
-                sl = entry * (1 - 0.01) if direction == "long" else entry * (1 + 0.01)
+            # HTF 데이터가 있으면 개선된 SL 산출 함수 사용
+            if htf_df is not None and not htf_df.empty:
+                from core.utils import calculate_improved_stop_loss
+                
+                try:
+                    sl_result = calculate_improved_stop_loss(
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry,
+                        htf_df=htf_df,
+                        protective=protective,
+                        trigger_zone=trigger_zone,
+                        min_rr_base=MIN_RR_BASE
+                    )
+                    
+                    sl = sl_result['sl_level']
+                    sl_reason = sl_result['reason']
+                    sl_priority = sl_result['priority']
+                    
+                    print(f"[SL] {symbol} 개선된 SL 산출: {sl:.5f} | 근거: {sl_reason} | 우선순위: {sl_priority}")
+                    send_discord_debug(f"[SL] {symbol} 개선된 SL: {sl:.5f} | {sl_reason}", "aggregated")
+                    
+                except Exception as e:
+                    print(f"[SL] {symbol} 개선된 SL 산출 실패: {e} → 기존 로직 사용")
+                    send_discord_debug(f"[SL] {symbol} 개선된 SL 산출 실패: {e}", "aggregated")
+                    sl = None  # 기존 로직으로 폴백
+            
+            # 기존 로직 (폴백)
+            if sl is None:
+                # ①-A MSS-only protective 가 있으면 그대로
+                if protective is not None:
+                    sl = protective
+                else:
+                    # ①-B 최후 폴백 = 1 % 리스크
+                    sl = entry * (1 - 0.01) if direction == "long" else entry * (1 + 0.01)
 
-        # ─── ② 최소 리스크(거리) 강제 ──────────────────
+        # ─── ② 최소 리스크(거리) 검증 및 보정 ──────────────────
         try:
             from exchange.router import get_tick_size as _tick
             tick = float(_tick(symbol) or 0)
         except Exception:
             tick = 0
 
-        import math
-
-        # 최소 위험비 완화 (1 % → 0.5 %)
+        # 최소 위험비 검증
         min_rr = max(MIN_RR_BASE, (float(tick) / entry) * 3 if tick else 0)
-
+        
         if direction == "long":
             gap = (entry - sl) / entry
             if gap < min_rr:
+                print(f"[SL] {symbol} SL 최소 거리 미달 ({gap:.4f} < {min_rr:.4f}) → 보정")
                 sl = entry * (1 - min_rr)
         else:  # short
             gap = (sl - entry) / entry
             if gap < min_rr:
+                print(f"[SL] {symbol} SL 최소 거리 미달 ({gap:.4f} < {min_rr:.4f}) → 보정")
                 sl = entry * (1 + min_rr)
 
-        # ─── ② TP를 SL 기준으로 재계산 --------------------
+        # ─── ③ TP를 SL 기준으로 재계산 --------------------
         # ── tickSize 라운딩을 먼저 맞춘다 ──
         from exchange.router import get_tick_size as _tick
         tick = Decimal(str(_tick(symbol) or 0))
@@ -208,6 +239,8 @@ class PositionManager:
             "tp_order_id": None,          # ← TP 주문 ID 추가
             "initial_size": None,         # ← 초기 포지션 사이즈 추가
             "_created": time.time(),        # → 트레일링 SL grace‑period 용
+            "trigger_zone": trigger_zone,    # ★ 진입근거 존 정보 저장
+            "htf_df": htf_df,               # ★ HTF 데이터 저장 (참조용)
         }
         on_entry(symbol, direction, entry, sl, tp)   # ★ 호출
 
@@ -278,10 +311,18 @@ class PositionManager:
             send_discord_debug(f"[ENTRY] {symbol} 초기 포지션 사이즈 확인 실패: {e}", "aggregated")
 
         # ────────── 메시지 구성 ──────────
-        basis_txt = f" | {basis}" if basis else ""
+        basis_txt = f"\n📋 {basis}" if basis else ""
+        
+        # 상세 정보 구성
+        risk_distance = abs(entry - sl)
+        reward_distance = abs(tp - entry)
+        risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else 0
+        
         msg = (
-            f"[ENTRY] {symbol} | {direction.upper()} @ {entry:.4f} | "
-            f"SL: {sl:.4f} | TP: {tp:.4f}{basis_txt}"
+            f"🚀 **[ENTRY]** {symbol} | {direction.upper()} @ {entry:.4f}\n"
+            f"🛡️ SL: {sl:.4f} | 🎯 TP: {tp:.4f}\n"
+            f"📊 리스크: {risk_distance:.4f} | 보상: {reward_distance:.4f} | R:R = {risk_reward_ratio:.2f}"
+            f"{basis_txt}"
         )
 
         # ────────── 중복 알림 차단 ──────────
@@ -439,22 +480,52 @@ class PositionManager:
 
         # ──────────────────────────────────────────────────────────────
         #  📌 보호선(MSS) 로직은 **1차 익절(half_exit) 이후부터** 활성
-        #      초기 SL 을 그대로 두고, 익절 뒤에만 ‘더 보수적’ SL 로 교체
+        #      초기 SL 을 그대로 두고, 익절 뒤에만 '더 보수적' SL 로 교체
         # ──────────────────────────────────────────────────────────────
         candidates = []
         if half_exit:                                  # ← 핵심 변경
-            # ───────── LTF(1 m) 보호선 후보 ─────────
-            if ltf_df is not None:
-                p = get_ltf_protective(ltf_df, direction)
-                if p:
-                    candidates.append(p["protective_level"])
+            # ───────── 개선된 보호선 산출 ─────────
+            from core.protective import get_improved_protective_level
+            
+            try:
+                # 저장된 HTF 데이터와 trigger_zone 사용
+                stored_htf_df = pos.get("htf_df")
+                stored_trigger_zone = pos.get("trigger_zone")
+                
+                improved_protective = get_improved_protective_level(
+                    ltf_df=ltf_df,
+                    htf_df=stored_htf_df if stored_htf_df is not None else htf_df,
+                    direction=direction,
+                    entry_price=entry,
+                    trigger_zone=stored_trigger_zone,
+                    use_htf=USE_HTF_PROTECTIVE
+                )
+                
+                if improved_protective:
+                    candidates.append(improved_protective["protective_level"])
+                    print(f"[PROTECTIVE] {symbol} 개선된 보호선: {improved_protective['protective_level']:.5f} | "
+                          f"근거: {improved_protective['reason']} | 우선순위: {improved_protective['priority']}")
+                    send_discord_debug(f"[PROTECTIVE] {symbol} 개선된 보호선: {improved_protective['protective_level']:.5f} | "
+                                     f"{improved_protective['reason']}", "aggregated")
+                else:
+                    print(f"[PROTECTIVE] {symbol} 개선된 보호선 산출 실패 → 기존 로직 사용")
+                    
+            except Exception as e:
+                print(f"[PROTECTIVE] {symbol} 개선된 보호선 산출 오류: {e} → 기존 로직 사용")
+                send_discord_debug(f"[PROTECTIVE] {symbol} 개선된 보호선 오류: {e}", "aggregated")
+                
+                # 기존 로직으로 폴백
+                if ltf_df is not None:
+                    p = get_ltf_protective(ltf_df, direction)
+                    if p:
+                        candidates.append(p["protective_level"])
 
-            # ───────── HTF(5 m) 보호선 – 옵션 ────────
-            if USE_HTF_PROTECTIVE and htf_df is not None:
-                # HTF_TF 를 사용하는 보호선 (lookback 파라미터는 필요에 따라 조정)
-                p = get_protective_level(htf_df, direction, lookback=12, span=2)
-                if p:
-                    candidates.append(p["protective_level"])
+                # ───────── HTF(5 m) 보호선 – 옵션 ────────
+                if USE_HTF_PROTECTIVE and htf_df is not None:
+                    # HTF_TF 를 사용하는 보호선 (lookback 파라미터는 필요에 따라 조정)
+                    p = get_protective_level(htf_df, direction, lookback=12, span=2)
+                    if p:
+                        candidates.append(p["protective_level"])
 
         # half_exit 이전에는 candidates == [] → 아래 MSS 블록 스킵
         if candidates:
@@ -464,7 +535,7 @@ class PositionManager:
                 (direction == "short" and (protective is None or new_protective < protective))
             )
 
-            # 보호선이 더 “보수적”일 때만 교체
+            # 보호선이 더 "보수적"일 때만 교체
             if better_level:
                 pos["mss_triggered"]   = True        # 최초·후속 MSS 모두 기록
                 pos["protective_level"] = new_protective
@@ -836,6 +907,14 @@ class PositionManager:
         data = self.positions if sym is None else {sym: self.positions.get(sym, {})}
         pprint.pp({ "ts": now, **data })
 
+    def _verify_stop_losses(self):
+        """
+        모든 포지션의 SL 주문 존재 여부를 주기적으로 검증
+        기본 구현 - 확장 클래스에서 오버라이드 가능
+        """
+        # 기본 구현에서는 아무것도 하지 않음 (안전한 기본값)
+        pass
+
 
 # Global cache for entry messages
 _ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}
@@ -845,6 +924,7 @@ class PositionManagerExtended(PositionManager):
     def _verify_stop_losses(self):
         """
         모든 포지션의 SL 주문 존재 여부를 주기적으로 검증
+        확장된 구현 - 실제 SL 검증 수행
         """
         if not self.positions:
             return
@@ -852,7 +932,10 @@ class PositionManagerExtended(PositionManager):
         try:
             from exchange.router import GATE_SET
             
-            for symbol, pos in self.positions.items():
+            # 딕셔너리 순회 중 수정 방지를 위해 복사본 사용
+            positions_copy = dict(self.positions)
+            
+            for symbol, pos in positions_copy.items():
                 sl_price = pos.get('sl')
                 if not sl_price:
                     continue

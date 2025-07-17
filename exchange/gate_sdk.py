@@ -336,9 +336,10 @@ def place_order_with_tp_sl(symbol: str, side: str, size: float, tp: float, sl: f
         # sl_res = futures_api.create_price_triggered_order(...)
         # if not sl_res: raise Exception("SL 주문 실패")
 
+        # 간단한 진입 알림만 전송 (상세 정보는 main.py에서 처리)
         msg = f"[TP/SL] {symbol} 진입 및 TP/SL 설정 완료 → TP: {tp}, SL: {sl}"
         print(msg)
-        send_discord_message(msg, "gateio")
+        # send_discord_message는 main.py에서 상세 정보와 함께 전송
         return True
 
     except Exception as e:
