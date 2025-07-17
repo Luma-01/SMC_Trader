@@ -107,7 +107,8 @@ def is_iof_entry(
     # ✅ ATR 기반 동적 버퍼 계산
     try:
         # ATR 계산 (14봉 기준)
-        htf_df['prev_close'] = htf_df['close'].shift(1)
+        htf_df = htf_df.copy()
+        htf_df.loc[:, 'prev_close'] = htf_df['close'].shift(1)
         tr = pd.concat([
             htf_df['high'] - htf_df['low'],
             (htf_df['high'] - htf_df['prev_close']).abs(),

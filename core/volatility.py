@@ -14,6 +14,9 @@ def atr_pct(df: pd.DataFrame) -> Optional[float]:
     if df is None or len(df) < ATR_PERIOD + 2:
         return None
 
+    # DataFrame 복사본 생성하여 SettingWithCopyWarning 방지
+    df = df.copy()
+
     # ───────── True Range 계산 ─────────
     tr = pd.concat(
         [

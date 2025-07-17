@@ -21,13 +21,16 @@ def get_mss_and_protective_low(
     최근 MSS(BOS) 감지 후 MSS 직전 스윙로우/스윙하이를 보호선으로 돌려줌
     direction: 'long' or 'short'
     """
+    # DataFrame 복사본 생성하여 SettingWithCopyWarning 방지
+    df = df.copy()
+    
     # ── 구조 리스트 (NaN 제외) ─────────────────────
     df_struct = detect_structure(df, use_wick=use_wick).dropna(subset=['structure'])
 
     # 몸통 기준일 때 원본 df에도 body_high/low 컬럼이 없으면 생성
     if not use_wick and 'body_high' not in df.columns:
-        df['body_high'] = df[['open', 'close']].max(axis=1)
-        df['body_low']  = df[['open', 'close']].min(axis=1)
+        df.loc[:, 'body_high'] = df[['open', 'close']].max(axis=1)
+        df.loc[:, 'body_low'] = df[['open', 'close']].min(axis=1)
 
     hi = 'high' if use_wick else 'body_high'
     lo = 'low'  if use_wick else 'body_low'
@@ -51,7 +54,7 @@ def get_mss_and_protective_low(
     #   • BOS 폭이 0.8 × ATR14 이상일 때만 MSS 인정
     # ------------------------------------------------
     # ATR 계산(간단 True Range)
-    df['prev_close'] = df['close'].shift(1)
+    df.loc[:, 'prev_close'] = df['close'].shift(1)
     tr = pd.concat(
         [
             df[hi] - df[lo],
