@@ -730,3 +730,83 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         print(f"[ERROR] TP 갱신 실패: {symbol} → {e}")
         send_discord_debug(f"[ERROR] TP 갱신 실패: {symbol} → {e}", "gateio")
         return False
+
+def verify_sl_exists_gate(symbol: str, expected_sl_price: float = None) -> bool:
+    """
+    Gate.io에서 심볼의 SL 주문이 실제로 존재하는지 확인
+    Args:
+        symbol: 심볼명 (Gate 형식: BTC_USDT)
+        expected_sl_price: 예상 SL 가격 (선택사항)
+    Returns:
+        bool: SL 주문 존재 여부
+    """
+    try:
+        # Gate에서는 trigger 주문으로 SL 관리
+        open_triggers = futures_api.list_price_triggered_orders("usdt", status="open")
+        
+        # 해당 심볼의 SL 주문 찾기
+        sl_orders = []
+        for order in open_triggers:
+            if (order.initial.contract == symbol and 
+                order.initial.close == True and  # 청산 주문
+                order.trigger.rule in [1, 2]):  # 1=short SL, 2=long SL
+                sl_orders.append(order)
+        
+        if not sl_orders:
+            return False
+            
+        if expected_sl_price is not None:
+            tick = get_tick_size_gate(symbol)
+            for order in sl_orders:
+                trigger_price = float(order.trigger.price)
+                if abs(trigger_price - expected_sl_price) < float(tick):
+                    return True
+            return False
+            
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Gate SL 검증 실패: {symbol} → {e}")
+        return False
+
+def ensure_stop_loss_gate(symbol: str, direction: str, sl_price: float, max_retries: int = 3) -> bool:
+    """
+    Gate.io에서 SL 주문이 확실히 존재하도록 보장
+    Args:
+        symbol: 심볼명 (Gate 형식)
+        direction: 방향 (long/short)
+        sl_price: SL 가격
+        max_retries: 최대 재시도 횟수
+    Returns:
+        bool: SL 설정 성공 여부
+    """
+    import time
+    from notify.discord import send_discord_debug
+    
+    for attempt in range(max_retries):
+        # 1. 현재 SL 존재 여부 확인
+        if verify_sl_exists_gate(symbol, sl_price):
+            print(f"[SL] {symbol} Gate SL 주문 확인됨 @ {sl_price:.4f}")
+            return True
+        
+        # 2. SL 주문 생성/업데이트 시도
+        print(f"[SL] {symbol} Gate SL 주문 생성 시도 {attempt + 1}/{max_retries}")
+        success = update_stop_loss_order(symbol, direction, sl_price)
+        
+        if success:
+            time.sleep(1)  # 주문 반영 대기
+            if verify_sl_exists_gate(symbol, sl_price):
+                print(f"[SL] {symbol} Gate SL 주문 생성 성공 @ {sl_price:.4f}")
+                return True
+        
+        # 3. 재시도 대기 (지수 백오프)
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt
+            print(f"[SL] {symbol} Gate SL 설정 실패 - {wait_time}초 후 재시도")
+            time.sleep(wait_time)
+    
+    # 4. 최종 실패 시 알림
+    error_msg = f"[CRITICAL] {symbol} Gate SL 설정 최종 실패 - 수동 확인 필요!"
+    print(error_msg)
+    send_discord_debug(error_msg, "gateio")
+    return False

@@ -291,10 +291,27 @@ def place_order_with_tp_sl(
             sl_kwargs["positionSide"] = position_side
 
         # TP 지정가 주문
-        client.futures_create_order(**tp_kwargs)
-        # SL 주문은 update_stop_loss_order() 에서 일괄 관리하므로
-        # 이 지점에서는 SL 생성 로직을 비활성화합니다.
-        # client.futures_create_order(**sl_kwargs)
+        tp_order = client.futures_create_order(**tp_kwargs)
+        print(f"[TP] {symbol} TP 주문 생성 완료: {tp_order.get('orderId', 'N/A')}")
+        
+        # SL 주문 생성 (필수 - 포지션 보호를 위해)
+        try:
+            sl_order = client.futures_create_order(**sl_kwargs)
+            print(f"[SL] {symbol} SL 주문 생성 완료: {sl_order.get('orderId', 'N/A')}")
+            send_discord_debug(f"[SL] {symbol} SL 주문 생성 완료 @ {sl_str}", "binance")
+        except Exception as sl_e:
+            print(f"[ERROR] {symbol} SL 주문 생성 실패: {sl_e}")
+            send_discord_debug(f"[CRITICAL] {symbol} SL 주문 생성 실패: {sl_e}", "binance")
+            # SL 생성 실패는 매우 위험하므로 재시도
+            time.sleep(1)
+            try:
+                sl_order = client.futures_create_order(**sl_kwargs)
+                print(f"[SL] {symbol} SL 주문 재시도 성공: {sl_order.get('orderId', 'N/A')}")
+                send_discord_debug(f"[SL] {symbol} SL 주문 재시도 성공 @ {sl_str}", "binance")
+            except Exception as sl_e2:
+                print(f"[CRITICAL] {symbol} SL 주문 재시도 실패: {sl_e2}")
+                send_discord_debug(f"[CRITICAL] {symbol} SL 주문 재시도 실패 - 수동 확인 필요!", "binance")
+                raise Exception(f"SL 주문 생성 실패: {sl_e2}")
 
         print(f"[TP/SL] {symbol} 진입 {filled_qty} → TP:{tp_str}, SL:{sl_str}")
         send_discord_message(
@@ -630,3 +647,96 @@ def update_take_profit_order(symbol: str, direction: str, take_price: float):
         print(f"[ERROR] TP 갱신 실패: {symbol} → {e}")
         send_discord_debug(f"[ERROR] TP 갱신 실패: {symbol} → {e}", "binance")
         return False
+
+def verify_sl_exists(symbol: str, expected_sl_price: float = None) -> bool:
+    """
+    심볼의 SL 주문이 실제로 존재하는지 확인
+    Args:
+        symbol: 심볼명
+        expected_sl_price: 예상 SL 가격 (선택사항)
+    Returns:
+        bool: SL 주문 존재 여부
+    """
+    try:
+        open_orders = client.futures_get_open_orders(symbol=symbol)
+        sl_orders = [
+            order for order in open_orders 
+            if order["type"] == ORDER_TYPE_STOP_MARKET and 
+            (order.get("reduceOnly") or order.get("closePosition"))
+        ]
+        
+        if not sl_orders:
+            return False
+            
+        if expected_sl_price is not None:
+            tick = get_tick_size(symbol)
+            for order in sl_orders:
+                if abs(float(order["stopPrice"]) - expected_sl_price) < float(tick):
+                    return True
+            return False
+            
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] SL 검증 실패: {symbol} → {e}")
+        return False
+
+def ensure_stop_loss(symbol: str, direction: str, sl_price: float, max_retries: int = 3) -> bool:
+    """
+    SL 주문이 확실히 존재하도록 보장
+    Args:
+        symbol: 심볼명
+        direction: 방향 (long/short)
+        sl_price: SL 가격
+        max_retries: 최대 재시도 횟수
+    Returns:
+        bool: SL 설정 성공 여부
+    """
+    import time
+    from exchange.router import update_stop_loss
+    from notify.discord import send_discord_debug
+    
+    for attempt in range(max_retries):
+        # 1. 현재 SL 존재 여부 확인
+        if verify_sl_exists(symbol, sl_price):
+            print(f"[SL] {symbol} SL 주문 확인됨 @ {sl_price:.4f}")
+            return True
+        
+        # 2. SL 주문 생성/업데이트 시도
+        print(f"[SL] {symbol} SL 주문 생성 시도 {attempt + 1}/{max_retries}")
+        success = update_stop_loss(symbol, direction, sl_price)
+        
+        if success and success is not True:  # 실제 주문 ID 반환된 경우
+            time.sleep(1)  # 주문 반영 대기
+            if verify_sl_exists(symbol, sl_price):
+                print(f"[SL] {symbol} SL 주문 생성 성공 @ {sl_price:.4f}")
+                return True
+        
+        # 3. 재시도 대기 (지수 백오프)
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt
+            print(f"[SL] {symbol} SL 설정 실패 - {wait_time}초 후 재시도")
+            time.sleep(wait_time)
+    
+    # 4. 최종 실패 시 알림
+    error_msg = f"[CRITICAL] {symbol} SL 설정 최종 실패 - 수동 확인 필요!"
+    print(error_msg)
+    send_discord_debug(error_msg, "binance")
+    return False
+
+def health_check_stop_losses(positions: dict) -> list:
+    """
+    모든 포지션의 SL 주문 존재 여부 검증
+    Args:
+        positions: 포지션 딕셔너리
+    Returns:
+        list: SL이 누락된 심볼 리스트
+    """
+    missing_sl_symbols = []
+    
+    for symbol, pos in positions.items():
+        if not verify_sl_exists(symbol, pos.get('sl')):
+            missing_sl_symbols.append(symbol)
+            print(f"[WARN] {symbol} SL 주문 누락 감지")
+    
+    return missing_sl_symbols
