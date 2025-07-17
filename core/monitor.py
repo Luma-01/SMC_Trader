@@ -70,10 +70,10 @@ def _capture_chart(trade: dict):
                     'vol','c1','c2','c3','c4','c5','c6'
                 ],
             )
-            df['time'] = pd.to_datetime(df['time'], unit='ms')
+            df.loc[:, 'time'] = pd.to_datetime(df['time'], unit='ms')
             # ── 가격 컬럼만 float 로 변환 ──
             price_cols = ['open', 'high', 'low', 'close']
-            df[price_cols] = df[price_cols].astype(float)
+            df.loc[:, price_cols] = df[price_cols].astype(float)
         if df.empty:
             return
 

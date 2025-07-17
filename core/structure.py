@@ -12,15 +12,15 @@ def detect_structure(df: pd.DataFrame, *, use_wick: bool = True) -> pd.DataFrame
     df.attrs.setdefault("tf", "?")  # 타임프레임 기본값 설정
     # ── 선택된 기준(몸통 vs 꼬리)에 따라 고·저 컬럼 매핑
     if not use_wick:
-        df['body_high'] = df[['open', 'close']].max(axis=1)
-        df['body_low']  = df[['open', 'close']].min(axis=1)
+        df.loc[:, 'body_high'] = df[['open', 'close']].max(axis=1)
+        df.loc[:, 'body_low'] = df[['open', 'close']].min(axis=1)
         hi, lo = 'body_high', 'body_low'
     else:
         hi, lo = 'high', 'low'
 
-    df['prev_high'] = df[hi].shift(1)
-    df['prev_low']  = df[lo].shift(1)
-    df['structure'] = None
+    df.loc[:, 'prev_high'] = df[hi].shift(1)
+    df.loc[:, 'prev_low'] = df[lo].shift(1)
+    df.loc[:, 'structure'] = None
 
     symbol = df.attrs.get("symbol", "UNKNOWN")
     tf = df.attrs.get("tf", "?")
@@ -29,7 +29,7 @@ def detect_structure(df: pd.DataFrame, *, use_wick: bool = True) -> pd.DataFrame
     if len(df) < 3:
         print("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가")
         send_discord_debug("[STRUCTURE] ❌ 캔들 수 부족 → 구조 분석 불가", "aggregated")
-        df['structure'] = None
+        df.loc[:, 'structure'] = None
         return df
     
     #print(f"[STRUCTURE DEBUG] {symbol} ({tf}) 구조 분석 시작 → 캔들 수: {len(df)}")
@@ -50,7 +50,7 @@ def detect_structure(df: pd.DataFrame, *, use_wick: bool = True) -> pd.DataFrame
                 stype = 'CHoCH_down'
 
             if stype:
-                df.at[df.index[i], 'structure'] = stype
+                df.loc[df.index[i], 'structure'] = stype
                 structure_type = stype
                 structure_time = df['time'].iloc[i]
         except Exception as e:
@@ -68,12 +68,12 @@ def detect_structure(df: pd.DataFrame, *, use_wick: bool = True) -> pd.DataFrame
             if last_ob["type"] == "bullish" and last_px < last_ob["low"]:
                 structure_type = "OB_Break_down"
                 structure_time = df["time"].iloc[-1]
-                df.at[df.index[-1], "structure"] = structure_type
+                df.loc[df.index[-1], "structure"] = structure_type
 
             elif last_ob["type"] == "bearish" and last_px > last_ob["high"]:
                 structure_type = "OB_Break_up"
                 structure_time = df["time"].iloc[-1]
-                df.at[df.index[-1], "structure"] = structure_type
+                df.loc[df.index[-1], "structure"] = structure_type
     except Exception:
         pass
 
