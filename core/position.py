@@ -214,16 +214,16 @@ class PositionManager:
         # 진입 시 SL 주문 생성 (강화된 로직)
         sl_success = False
         try:
-                                      # 거래소별 SL 보장 로직
-              from exchange.router import GATE_SET
-              if symbol not in GATE_SET:
-                  # Binance의 경우 ensure_stop_loss 함수 사용
-                  from exchange.binance_api import ensure_stop_loss
-                  sl_success = ensure_stop_loss(symbol, direction, sl, max_retries=3)
-              else:
-                  # Gate의 경우 ensure_stop_loss_gate 함수 사용
-                  from exchange.gate_sdk import ensure_stop_loss_gate
-                  sl_success = ensure_stop_loss_gate(symbol, direction, sl, max_retries=3)
+            # 거래소별 SL 보장 로직
+            from exchange.router import GATE_SET
+            if symbol not in GATE_SET:
+                # Binance의 경우 ensure_stop_loss 함수 사용
+                from exchange.binance_api import ensure_stop_loss
+                sl_success = ensure_stop_loss(symbol, direction, sl, max_retries=3)
+            else:
+                # Gate의 경우 ensure_stop_loss_gate 함수 사용
+                from exchange.gate_sdk import ensure_stop_loss_gate
+                sl_success = ensure_stop_loss_gate(symbol, direction, sl, max_retries=3)
                 
             if sl_success:
                 self.positions[symbol]['sl_order_id'] = None  # 실제 ID는 거래소에서 관리
@@ -835,9 +835,13 @@ class PositionManager:
         now = datetime.datetime.utcnow().isoformat(timespec="seconds")
         data = self.positions if sym is None else {sym: self.positions.get(sym, {})}
         pprint.pp({ "ts": now, **data })
-                
+
+
+# Global cache for entry messages
 _ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}
 
+
+class PositionManagerExtended(PositionManager):
     def _verify_stop_losses(self):
         """
         모든 포지션의 SL 주문 존재 여부를 주기적으로 검증
@@ -853,41 +857,41 @@ _ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}
                 if not sl_price:
                     continue
                     
-                                 # 거래소별 SL 검증
-                 if symbol not in GATE_SET:
-                     # Binance 심볼 검증
-                     try:
-                         from exchange.binance_api import verify_sl_exists, ensure_stop_loss
-                         if not verify_sl_exists(symbol, sl_price):
-                             print(f"[WARN] {symbol} Binance SL 주문 누락 감지 - 재생성 시도")
-                             send_discord_debug(f"[WARN] {symbol} Binance SL 주문 누락 감지", "aggregated")
-                             
-                             # SL 재생성 시도
-                             direction = pos.get('direction')
-                             if direction:
-                                 success = ensure_stop_loss(symbol, direction, sl_price, max_retries=2)
-                                 if not success:
-                                     send_discord_debug(f"[CRITICAL] {symbol} Binance SL 재생성 실패!", "aggregated")
+                # 거래소별 SL 검증
+                if symbol not in GATE_SET:
+                    # Binance 심볼 검증
+                    try:
+                        from exchange.binance_api import verify_sl_exists, ensure_stop_loss
+                        if not verify_sl_exists(symbol, sl_price):
+                            print(f"[WARN] {symbol} Binance SL 주문 누락 감지 - 재생성 시도")
+                            send_discord_debug(f"[WARN] {symbol} Binance SL 주문 누락 감지", "aggregated")
+                            
+                            # SL 재생성 시도
+                            direction = pos.get('direction')
+                            if direction:
+                                success = ensure_stop_loss(symbol, direction, sl_price, max_retries=2)
+                                if not success:
+                                    send_discord_debug(f"[CRITICAL] {symbol} Binance SL 재생성 실패!", "aggregated")
                                      
-                     except Exception as e:
-                         print(f"[ERROR] {symbol} Binance SL 검증 중 오류: {e}")
-                 else:
-                     # Gate 심볼 검증
-                     try:
-                         from exchange.gate_sdk import verify_sl_exists_gate, ensure_stop_loss_gate
-                         if not verify_sl_exists_gate(symbol, sl_price):
-                             print(f"[WARN] {symbol} Gate SL 주문 누락 감지 - 재생성 시도")
-                             send_discord_debug(f"[WARN] {symbol} Gate SL 주문 누락 감지", "aggregated")
-                             
-                             # SL 재생성 시도
-                             direction = pos.get('direction')
-                             if direction:
-                                 success = ensure_stop_loss_gate(symbol, direction, sl_price, max_retries=2)
-                                 if not success:
-                                     send_discord_debug(f"[CRITICAL] {symbol} Gate SL 재생성 실패!", "aggregated")
-                                     
-                     except Exception as e:
-                         print(f"[ERROR] {symbol} Gate SL 검증 중 오류: {e}")
+                    except Exception as e:
+                        print(f"[ERROR] {symbol} Binance SL 검증 중 오류: {e}")
+                else:
+                    # Gate 심볼 검증
+                    try:
+                        from exchange.gate_sdk import verify_sl_exists_gate, ensure_stop_loss_gate
+                        if not verify_sl_exists_gate(symbol, sl_price):
+                            print(f"[WARN] {symbol} Gate SL 주문 누락 감지 - 재생성 시도")
+                            send_discord_debug(f"[WARN] {symbol} Gate SL 주문 누락 감지", "aggregated")
+                            
+                            # SL 재생성 시도
+                            direction = pos.get('direction')
+                            if direction:
+                                success = ensure_stop_loss_gate(symbol, direction, sl_price, max_retries=2)
+                                if not success:
+                                    send_discord_debug(f"[CRITICAL] {symbol} Gate SL 재생성 실패!", "aggregated")
+                                    
+                    except Exception as e:
+                        print(f"[ERROR] {symbol} Gate SL 검증 중 오류: {e}")
                         
         except Exception as e:
             print(f"[ERROR] SL 검증 프로세스 오류: {e}")
@@ -916,40 +920,40 @@ _ENTRY_CACHE: dict[str, str] = {}    # {symbol: 마지막 전송 메시지}
                     
                 print(f"[CHECK] {symbol} SL 검증 중...")
                 
-                                 if symbol not in GATE_SET:
-                     # Binance 심볼
-                     try:
-                         from exchange.binance_api import verify_sl_exists, ensure_stop_loss
-                         if verify_sl_exists(symbol, sl_price):
-                             print(f"[OK] {symbol} Binance SL 주문 존재 확인 @ {sl_price:.4f}")
-                         else:
-                             print(f"[FIXING] {symbol} Binance SL 주문 누락 - 재생성 중...")
-                             success = ensure_stop_loss(symbol, direction, sl_price, max_retries=3)
-                             if success:
-                                 print(f"[FIXED] {symbol} Binance SL 주문 재생성 완료")
-                                 send_discord_debug(f"[FIXED] {symbol} Binance SL 주문 재생성 완료", "aggregated")
-                             else:
-                                 print(f"[FAILED] {symbol} Binance SL 주문 재생성 실패")
-                                 send_discord_debug(f"[FAILED] {symbol} Binance SL 주문 재생성 실패", "aggregated")
-                     except Exception as e:
-                         print(f"[ERROR] {symbol} Binance SL 처리 중 오류: {e}")
-                 else:
-                     # Gate 심볼
-                     try:
-                         from exchange.gate_sdk import verify_sl_exists_gate, ensure_stop_loss_gate
-                         if verify_sl_exists_gate(symbol, sl_price):
-                             print(f"[OK] {symbol} Gate SL 주문 존재 확인 @ {sl_price:.4f}")
-                         else:
-                             print(f"[FIXING] {symbol} Gate SL 주문 누락 - 재생성 중...")
-                             success = ensure_stop_loss_gate(symbol, direction, sl_price, max_retries=3)
-                             if success:
-                                 print(f"[FIXED] {symbol} Gate SL 주문 재생성 완료")
-                                 send_discord_debug(f"[FIXED] {symbol} Gate SL 주문 재생성 완료", "aggregated")
-                             else:
-                                 print(f"[FAILED] {symbol} Gate SL 주문 재생성 실패")
-                                 send_discord_debug(f"[FAILED] {symbol} Gate SL 주문 재생성 실패", "aggregated")
-                     except Exception as e:
-                         print(f"[ERROR] {symbol} Gate SL 처리 중 오류: {e}")
+                if symbol not in GATE_SET:
+                    # Binance 심볼
+                    try:
+                        from exchange.binance_api import verify_sl_exists, ensure_stop_loss
+                        if verify_sl_exists(symbol, sl_price):
+                            print(f"[OK] {symbol} Binance SL 주문 존재 확인 @ {sl_price:.4f}")
+                        else:
+                            print(f"[FIXING] {symbol} Binance SL 주문 누락 - 재생성 중...")
+                            success = ensure_stop_loss(symbol, direction, sl_price, max_retries=3)
+                            if success:
+                                print(f"[FIXED] {symbol} Binance SL 주문 재생성 완료")
+                                send_discord_debug(f"[FIXED] {symbol} Binance SL 주문 재생성 완료", "aggregated")
+                            else:
+                                print(f"[FAILED] {symbol} Binance SL 주문 재생성 실패")
+                                send_discord_debug(f"[FAILED] {symbol} Binance SL 주문 재생성 실패", "aggregated")
+                    except Exception as e:
+                        print(f"[ERROR] {symbol} Binance SL 처리 중 오류: {e}")
+                else:
+                    # Gate 심볼
+                    try:
+                        from exchange.gate_sdk import verify_sl_exists_gate, ensure_stop_loss_gate
+                        if verify_sl_exists_gate(symbol, sl_price):
+                            print(f"[OK] {symbol} Gate SL 주문 존재 확인 @ {sl_price:.4f}")
+                        else:
+                            print(f"[FIXING] {symbol} Gate SL 주문 누락 - 재생성 중...")
+                            success = ensure_stop_loss_gate(symbol, direction, sl_price, max_retries=3)
+                            if success:
+                                print(f"[FIXED] {symbol} Gate SL 주문 재생성 완료")
+                                send_discord_debug(f"[FIXED] {symbol} Gate SL 주문 재생성 완료", "aggregated")
+                            else:
+                                print(f"[FAILED] {symbol} Gate SL 주문 재생성 실패")
+                                send_discord_debug(f"[FAILED] {symbol} Gate SL 주문 재생성 실패", "aggregated")
+                    except Exception as e:
+                        print(f"[ERROR] {symbol} Gate SL 처리 중 오류: {e}")
                     
         except Exception as e:
             print(f"[ERROR] 강제 SL 검증 중 오류: {e}")
