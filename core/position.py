@@ -1,6 +1,6 @@
 # core/position.py
 
-import time
+import time as time_module
 from typing import Dict, Optional
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # ── pandas 타입 힌트/연산에 사용 ──────────────────────
@@ -101,7 +101,7 @@ class PositionManager:
     def in_cooldown(self, symbol: str) -> bool:
         """True  → 아직 쿨-다운 시간 미경과"""
         t = self._cooldowns.get(symbol)
-        return t is not None and (time.time() - t) < self.COOLDOWN_SEC
+        return t is not None and (time_module.time() - t) < self.COOLDOWN_SEC
 
     # 현재 내부에서 '열려-있다'고 간주되는 심볼 리스트
     def active_symbols(self) -> list[str]:
@@ -201,7 +201,7 @@ class PositionManager:
             "protective_level": protective,          # ← 최초부터 보유
             "mss_triggered": False,
             "sl_order_id": None,
-            "_created": time.time(),        # → 트레일링 SL grace‑period 용
+            "_created": time_module.time(),        # → 트레일링 SL grace‑period 용
         }
         on_entry(symbol, direction, entry, sl, tp)   # ★ 호출
 
@@ -372,7 +372,7 @@ class PositionManager:
                     "aggregated",
                 )
                 # ▸ ❶ 60 초 쿨다운 해시 저장
-                pos["_mss_skip_until"] = time.time() + 60
+                pos["_mss_skip_until"] = time_module.time() + 60
                 # ▸ ❷ 보호선·MSS 플래그 초기화
                 pos["protective_level"] = None
                 pos["mss_triggered"]    = False
@@ -482,7 +482,7 @@ class PositionManager:
             print(f"[INFO] {symbol} SL 이미 소멸 → MARKET 청산 생략")
             # 내부 포지션만 제거하고 쿨-다운
             pos = self.positions.pop(symbol, None)
-            self._cooldowns[symbol] = time.time()
+            self._cooldowns[symbol] = time_module.time()
             return
         
         pos = self.positions.pop(symbol, None)
@@ -520,7 +520,7 @@ class PositionManager:
         on_exit(symbol, exit_price, datetime.now(timezone.utc))
 
         # ▸ 쿨-다운 시작
-        self._cooldowns[symbol] = time.time()
+        self._cooldowns[symbol] = time_module.time()
 
     def init_position(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
         self.positions[symbol] = {
@@ -563,7 +563,7 @@ class PositionManager:
         if not pos.get("half_exit"):
             return
         # ② half_exit 후라도 *진입 30 초 이내* 는 무시 (급격한 노이즈 방어)
-        if time.time() - pos.get("_created", 0) < 30:
+        if time_module.time() - pos.get("_created", 0) < 30:
             return
         direction = pos['direction']
         current_sl = pos['sl']
