@@ -70,8 +70,8 @@ if ENABLE_BINANCE:
 #    • .env 에 HTF_TF / LTF_TF 지정 가능
 #    • 모듈들은 여기서만 값을 import
 # ───────────────────────────────────────────────
-HTF_TF = os.getenv("HTF_TF", "15m").lower()   # High-Time-Frame
-LTF_TF = os.getenv("LTF_TF", "1m").lower()   # Low-Time-Frame
+HTF_TF = os.getenv("HTF_TF", "4h").lower()   # High-Time-Frame
+LTF_TF = os.getenv("LTF_TF", "15m").lower()   # Low-Time-Frame
 
 # data_feed 등이 구독할 캔들 타임프레임 목록
 #  ↳ 필요 시 ‘추가’ 프레임을 세트에 넣어주면 된다.
