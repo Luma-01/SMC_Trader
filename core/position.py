@@ -1,6 +1,6 @@
 # core/position.py
 
-import time
+import time as time_module
 from typing import Dict, Optional
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # ── pandas 타입 힌트/연산에 사용 ──────────────────────
@@ -105,7 +105,7 @@ class PositionManager:
     def in_cooldown(self, symbol: str) -> bool:
         """True  → 아직 쿨-다운 시간 미경과"""
         t = self._cooldowns.get(symbol)
-        return t is not None and (time.time() - t) < self.COOLDOWN_SEC
+        return t is not None and (time_module.time() - t) < self.COOLDOWN_SEC
 
     # 현재 내부에서 '열려-있다'고 간주되는 심볼 리스트
     def active_symbols(self) -> list[str]:
@@ -238,7 +238,7 @@ class PositionManager:
             "sl_order_id": None,
             "tp_order_id": None,          # ← TP 주문 ID 추가
             "initial_size": None,         # ← 초기 포지션 사이즈 추가
-            "_created": time.time(),        # → 트레일링 SL grace‑period 용
+            "_created": time_module.time(),        # → 트레일링 SL grace‑period 용 (수정됨)
             "trigger_zone": trigger_zone,    # ★ 진입근거 존 정보 저장
             "htf_df": htf_df,               # ★ HTF 데이터 저장 (참조용)
         }
@@ -560,7 +560,7 @@ class PositionManager:
                     "aggregated",
                 )
                 # ▸ ❶ 60 초 쿨다운 해시 저장
-                pos["_mss_skip_until"] = time.time() + 60
+                pos["_mss_skip_until"] = time_module.time() + 60
                 # ▸ ❷ 보호선·MSS 플래그 초기화
                 pos["protective_level"] = None
                 pos["mss_triggered"]    = False
@@ -639,7 +639,7 @@ class PositionManager:
             live = get_open_position(symbol)
             if live and abs(live.get("entry", 0)) > 0:
                 # 스탑로스 알림 중복 방지 체크 (30초 간격)
-                now = time.time()
+                now = time_module.time()
                 last_alert = self._sl_alerts.get(symbol, 0)
                 if now - last_alert > 30:  # 30초마다 최대 1번 알림
                     print(f"[STOP LOSS] {symbol} LONG @ mark_price={mark_price:.2f}")
@@ -649,7 +649,7 @@ class PositionManager:
             else:
                 print(f"[DEBUG] {symbol} 스탑로스 조건 충족하지만 포지션 없음 - 캐시 정리")
                 self.positions.pop(symbol, None)
-                self._cooldowns[symbol] = time.time()
+                self._cooldowns[symbol] = time_module.time()
                 # 스탑로스 알림 상태도 정리
                 self._sl_alerts.pop(symbol, None)
 
@@ -658,7 +658,7 @@ class PositionManager:
             live = get_open_position(symbol)
             if live and abs(live.get("entry", 0)) > 0:
                 # 스탑로스 알림 중복 방지 체크 (30초 간격)
-                now = time.time()
+                now = time_module.time()
                 last_alert = self._sl_alerts.get(symbol, 0)
                 if now - last_alert > 30:  # 30초마다 최대 1번 알림
                     print(f"[STOP LOSS] {symbol} SHORT @ mark_price={mark_price:.2f}")
@@ -668,7 +668,7 @@ class PositionManager:
             else:
                 print(f"[DEBUG] {symbol} 스탑로스 조건 충족하지만 포지션 없음 - 캐시 정리")
                 self.positions.pop(symbol, None)
-                self._cooldowns[symbol] = time.time()
+                self._cooldowns[symbol] = time_module.time()
                 # 스탑로스 알림 상태도 정리
                 self._sl_alerts.pop(symbol, None)
 
@@ -698,7 +698,7 @@ class PositionManager:
             print(f"[INFO] {symbol} SL 이미 소멸 → MARKET 청산 생략")
             # 내부 포지션만 제거하고 쿨-다운
             pos = self.positions.pop(symbol, None)
-            self._cooldowns[symbol] = time.time()
+            self._cooldowns[symbol] = time_module.time()
             return
         
         pos = self.positions.pop(symbol, None)
@@ -736,7 +736,7 @@ class PositionManager:
         on_exit(symbol, exit_price, datetime.now(timezone.utc))
 
         # ▸ 쿨-다운 시작
-        self._cooldowns[symbol] = time.time()
+        self._cooldowns[symbol] = time_module.time()
         # ▸ 스탑로스 알림 상태 정리
         self._sl_alerts.pop(symbol, None)
 
@@ -781,7 +781,7 @@ class PositionManager:
         if not pos.get("half_exit"):
             return
         # ② half_exit 후라도 *진입 30 초 이내* 는 무시 (급격한 노이즈 방어)
-        if time.time() - pos.get("_created", 0) < 30:
+        if time_module.time() - pos.get("_created", 0) < 30:
             return
         direction = pos['direction']
         current_sl = pos['sl']
